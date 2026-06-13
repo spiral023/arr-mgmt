@@ -1,6 +1,9 @@
 import { Bell, Clock3, Database, KeyRound, Save, Shield, Timer, Wifi } from "lucide-react";
+import { useEffect, useState } from "react";
 import { IconButton } from "../components/IconButton";
 import { StatusPill } from "../components/StatusPill";
+import { listInstances, saveInstance, testInstance } from "../state/ipc-client";
+import type { InstanceConfigInput, InstanceConfigView, InstanceKind } from "../../shared/ipc-contracts";
 
 const fieldClassName =
   "h-10 w-full rounded-md border border-white/10 bg-ink-950 px-3 text-sm text-ink-200 outline-none shadow-surface transition-[background-color,border-color,box-shadow] duration-150 ease-out placeholder:text-ink-400 focus:border-signal-cyan focus:ring-2 focus:ring-signal-cyan/30";
@@ -8,24 +11,60 @@ const fieldClassName =
 const sectionClassName = "rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface";
 
 export function SettingsView() {
+  const [instances, setInstances] = useState<InstanceConfigView[]>([]);
+  const [message, setMessage] = useState("Ready");
+
+  useEffect(() => {
+    void listInstances().then(setInstances);
+  }, []);
+
+  async function handleSave(input: InstanceConfigInput) {
+    setMessage(`Saving ${input.kind}...`);
+    try {
+      await saveInstance(input);
+      setInstances(await listInstances());
+      setMessage(`${input.name} saved`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleTest(input: InstanceConfigInput) {
+    setMessage(`Testing ${input.kind}...`);
+    const result = await testInstance(input);
+    setMessage(result.ok ? `Connection OK: ${result.message}` : `Connection failed: ${result.message}`);
+  }
+
+  const sonarr = instances.find((instance) => instance.kind === "sonarr");
+  const radarr = instances.find((instance) => instance.kind === "radarr");
+
   return (
     <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
       <section className={sectionClassName}>
         <Header icon={Database} title="ARR Instances" description="Store Sonarr and Radarr connection details locally. API keys are encrypted by Electron safeStorage." />
+        <div className="mt-3 rounded-md border border-white/10 bg-ink-950/60 px-3 py-2 text-sm text-ink-200 shadow-surface">
+          {message}
+        </div>
         <div className="mt-4 grid gap-4">
           <InstanceForm
             apiKeyPlaceholder="Stored in encrypted local storage"
-            baseUrl="http://192.168.0.170:8989"
-            kind="Sonarr"
-            name="Sonarr"
-            status="connected"
+            baseUrl={sonarr?.baseUrl ?? "http://192.168.0.170:8989"}
+            hasApiKey={sonarr?.hasApiKey ?? false}
+            kind="sonarr"
+            name={sonarr?.name ?? "Sonarr"}
+            onSave={handleSave}
+            onTest={handleTest}
+            status={sonarr?.hasApiKey ? "configured" : "missing key"}
           />
           <InstanceForm
             apiKeyPlaceholder="Stored in encrypted local storage"
-            baseUrl="http://192.168.0.170:7878"
-            kind="Radarr"
-            name="Radarr"
-            status="connected"
+            baseUrl={radarr?.baseUrl ?? "http://192.168.0.170:7878"}
+            hasApiKey={radarr?.hasApiKey ?? false}
+            kind="radarr"
+            name={radarr?.name ?? "Radarr"}
+            onSave={handleSave}
+            onTest={handleTest}
+            status={radarr?.hasApiKey ? "configured" : "missing key"}
           />
         </div>
       </section>
@@ -126,8 +165,8 @@ export function SettingsView() {
       </section>
 
       <div className="xl:col-span-2">
-        <IconButton icon={Save} label="Save settings" tone="success">
-          Save settings
+        <IconButton icon={Save} label="Save settings" onClick={() => setMessage("Instance forms save individually. Use the Save buttons above.")} tone="success">
+          Save general settings
         </IconButton>
       </div>
     </div>
@@ -137,40 +176,73 @@ export function SettingsView() {
 function InstanceForm({
   apiKeyPlaceholder,
   baseUrl,
+  hasApiKey,
   kind,
   name,
+  onSave,
+  onTest,
   status,
 }: {
   apiKeyPlaceholder: string;
   baseUrl: string;
-  kind: "Sonarr" | "Radarr";
+  hasApiKey: boolean;
+  kind: InstanceKind;
   name: string;
-  status: "connected" | "disabled";
+  onSave: (input: InstanceConfigInput) => Promise<void>;
+  onTest: (input: InstanceConfigInput) => Promise<void>;
+  status: "configured" | "missing key";
 }) {
+  const [draftName, setDraftName] = useState(name);
+  const [draftBaseUrl, setDraftBaseUrl] = useState(baseUrl);
+  const [draftApiKey, setDraftApiKey] = useState("");
+  const label = kind === "sonarr" ? "Sonarr" : "Radarr";
+
+  useEffect(() => {
+    setDraftName(name);
+    setDraftBaseUrl(baseUrl);
+  }, [baseUrl, name]);
+
+  const payload = (): InstanceConfigInput => ({
+    kind,
+    name: draftName,
+    baseUrl: draftBaseUrl,
+    apiKey: draftApiKey || undefined,
+    enabled: true,
+  });
+
   return (
     <div className="rounded-lg border border-white/10 bg-ink-950/55 p-4 shadow-surface">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Wifi aria-hidden="true" className="h-4 w-4 text-signal-cyan" />
-          <span className="font-semibold text-white">{kind}</span>
+          <span className="font-semibold text-white">{label}</span>
         </div>
-        <StatusPill tone={status === "connected" ? "success" : "muted"}>{status}</StatusPill>
+        <StatusPill tone={status === "configured" ? "success" : "warning"}>{status}</StatusPill>
       </div>
       <div className="mt-4 grid gap-3 md:grid-cols-[10rem_1fr]">
         <label>
           <Label>Name</Label>
-          <input className={fieldClassName} defaultValue={name} />
+          <input className={fieldClassName} onChange={(event) => setDraftName(event.target.value)} value={draftName} />
         </label>
         <label>
           <Label>Base URL</Label>
-          <input className={fieldClassName} defaultValue={baseUrl} />
+          <input className={fieldClassName} onChange={(event) => setDraftBaseUrl(event.target.value)} value={draftBaseUrl} />
         </label>
         <label className="md:col-span-2">
           <Label>API key</Label>
           <div className="flex gap-2">
-            <input className={fieldClassName} placeholder={apiKeyPlaceholder} type="password" />
-            <IconButton className="shrink-0" icon={KeyRound} label={`Test ${kind} connection`}>
+            <input
+              className={fieldClassName}
+              onChange={(event) => setDraftApiKey(event.target.value)}
+              placeholder={hasApiKey ? "Saved API key is encrypted. Enter a new key to replace it." : apiKeyPlaceholder}
+              type="password"
+              value={draftApiKey}
+            />
+            <IconButton className="shrink-0" icon={KeyRound} label={`Test ${label} connection`} onClick={() => void onTest(payload())}>
               Test
+            </IconButton>
+            <IconButton className="shrink-0" icon={Save} label={`Save ${label} settings`} onClick={() => void onSave(payload())} tone="success">
+              Save
             </IconButton>
           </div>
         </label>

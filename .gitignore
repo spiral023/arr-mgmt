@@ -1,6 +1,7 @@
 node_modules
 out
 release
+release-new
 dist
 test-results
 playwright-report

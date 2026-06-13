@@ -5,34 +5,16 @@ import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
 import { updateColumnFilter } from "../state/table-state";
+import type { SonarrSeriesTableRow } from "../../shared/ipc-contracts";
 
 type SeriesStatus = "ready" | "searchable" | "cooldown" | "failed";
 
-interface SonarrSeriesRow {
-  blockedByCooldown: boolean;
-  episodes: number;
-  failedLastSearch: boolean;
-  files: number;
-  funFiles: number;
-  funShare: number;
-  hasFiles: boolean;
-  id: string;
-  lastAnalyzed: string;
-  lastGrabbed: string;
-  lastSearched: string;
-  monitored: boolean;
-  nonFunFiles: number;
-  searchableNow: boolean;
-  status: SeriesStatus;
-  title: string;
-  totalSizeBytes: number;
-}
+type SonarrSeriesRow = SonarrSeriesTableRow;
 
 const rows: SonarrSeriesRow[] = [
   {
-    blockedByCooldown: false,
+    arrId: 1,
     episodes: 16,
-    failedLastSearch: false,
     files: 16,
     funFiles: 8,
     funShare: 0.5,
@@ -43,15 +25,13 @@ const rows: SonarrSeriesRow[] = [
     lastSearched: "2026-06-13 20:18",
     monitored: true,
     nonFunFiles: 8,
-    searchableNow: true,
     status: "searchable",
     title: "Criminal Record",
     totalSizeBytes: 28_400_000_000,
   },
   {
-    blockedByCooldown: true,
+    arrId: 2,
     episodes: 80,
-    failedLastSearch: false,
     files: 80,
     funFiles: 80,
     funShare: 1,
@@ -62,15 +42,13 @@ const rows: SonarrSeriesRow[] = [
     lastSearched: "2026-06-13 06:05",
     monitored: true,
     nonFunFiles: 0,
-    searchableNow: false,
     status: "cooldown",
     title: "Slow Horses",
     totalSizeBytes: 142_700_000_000,
   },
   {
-    blockedByCooldown: false,
+    arrId: 3,
     episodes: 10,
-    failedLastSearch: true,
     files: 7,
     funFiles: 1,
     funShare: 0.14,
@@ -81,15 +59,13 @@ const rows: SonarrSeriesRow[] = [
     lastSearched: "2026-06-13 19:08",
     monitored: true,
     nonFunFiles: 6,
-    searchableNow: false,
     status: "failed",
     title: "Severance",
     totalSizeBytes: 61_300_000_000,
   },
   {
-    blockedByCooldown: false,
+    arrId: 4,
     episodes: 24,
-    failedLastSearch: false,
     files: 0,
     funFiles: 0,
     funShare: 0,
@@ -100,7 +76,6 @@ const rows: SonarrSeriesRow[] = [
     lastSearched: "-",
     monitored: false,
     nonFunFiles: 0,
-    searchableNow: false,
     status: "ready",
     title: "Archive Hold",
     totalSizeBytes: 0,
@@ -114,8 +89,19 @@ const statusTone: Record<SeriesStatus, StatusTone> = {
   searchable: "running",
 };
 
-export function SonarrSeriesView() {
+export function SonarrSeriesView({
+  analyzing = false,
+  onAnalyze,
+  rows: liveRows,
+  statusMessage = "Ready",
+}: {
+  analyzing?: boolean;
+  onAnalyze?: () => void;
+  rows?: SonarrSeriesTableRow[];
+  statusMessage?: string;
+}) {
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+  const resolvedRows = liveRows && liveRows.length > 0 ? liveRows : rows;
   const filterControls = useMemo(
     () => <SonarrFilters columnFilters={columnFilters} onColumnFiltersChange={setColumnFilters} />,
     [columnFilters],
@@ -227,30 +213,41 @@ export function SonarrSeriesView() {
   );
 
   return (
-    <DataTable
-      bulkActions={(selectedRows) => (
-        <>
-          <IconButton disabled={selectedRows.length === 0} icon={Radar} label="Analyze selected series" tone="success">
-            Analyze selected
-          </IconButton>
-          <IconButton disabled={selectedRows.length === 0} icon={Search} label="Search non-FuN selected series">
-            Search non-FuN
-          </IconButton>
-          <IconButton disabled={selectedRows.length === 0} icon={Zap} label="Grab available FuN releases" tone="warning">
-            Grab FuN*
-          </IconButton>
-        </>
-      )}
-      columnFilters={columnFilters}
-      columns={columns}
-      data={rows}
-      description="Series-level coverage with cooldown, searchability, and FuN* share filters."
-      filters={filterControls}
-      getRowId={(row) => row.id}
-      initialSorting={[{ id: "nonFunFiles", desc: true }]}
-      searchPlaceholder="Search series"
-      title="Sonarr Series"
-    />
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-white">Sonarr Analysis</h2>
+          <p className="mt-1 text-sm text-ink-400">{statusMessage}</p>
+        </div>
+        <IconButton disabled={analyzing} icon={Radar} label="Analyze Sonarr library" onClick={onAnalyze} tone="success">
+          {analyzing ? "Analyzing..." : "Analyze Sonarr"}
+        </IconButton>
+      </div>
+      <DataTable
+        bulkActions={(selectedRows) => (
+          <>
+            <IconButton disabled={selectedRows.length === 0 || analyzing} icon={Radar} label="Analyze selected series" onClick={onAnalyze} tone="success">
+              Analyze selected
+            </IconButton>
+            <IconButton disabled={selectedRows.length === 0} icon={Search} label="Search non-FuN selected series">
+              Search non-FuN
+            </IconButton>
+            <IconButton disabled={selectedRows.length === 0} icon={Zap} label="Grab available FuN releases" tone="warning">
+              Grab FuN*
+            </IconButton>
+          </>
+        )}
+        columnFilters={columnFilters}
+        columns={columns}
+        data={resolvedRows}
+        description="Series-level coverage with cooldown, searchability, and FuN* share filters."
+        filters={filterControls}
+        getRowId={(row) => row.id}
+        initialSorting={[{ id: "nonFunFiles", desc: true }]}
+        searchPlaceholder="Search series"
+        title="Sonarr Series"
+      />
+    </div>
   );
 }
 
