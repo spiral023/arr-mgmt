@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AppFrame } from "./components/AppFrame";
 import type { AppTabId } from "./components/TabNav";
-import { analyzeSonarr, getSonarrRows } from "./state/ipc-client";
+import { analyzeSonarr, getSonarrRows, grabSonarrSeries, searchSonarrSeries } from "./state/ipc-client";
 import { DashboardView } from "./views/DashboardView";
 import { JobsView } from "./views/JobsView";
 import { QuotaView } from "./views/QuotaView";
@@ -42,6 +42,26 @@ export function App() {
     }
   }
 
+  async function runSonarrSearch(seriesIds: number[]) {
+    setSonarrStatus(`Searching ${seriesIds.length} Sonarr series...`);
+    try {
+      const result = await searchSonarrSeries(seriesIds);
+      setSonarrStatus(result.message);
+    } catch (error) {
+      setSonarrStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function runSonarrGrab(seriesIds: number[]) {
+    setSonarrStatus(`Grabbing FuN* candidates for ${seriesIds.length} Sonarr series...`);
+    try {
+      const result = await grabSonarrSeries(seriesIds);
+      setSonarrStatus(result.message);
+    } catch (error) {
+      setSonarrStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   return (
     <AppFrame
       activeTab={activeTab}
@@ -57,6 +77,8 @@ export function App() {
         <SonarrSeriesView
           analyzing={sonarrAnalyzing}
           onAnalyze={() => void runSonarrAnalyze()}
+          onGrab={(seriesIds) => void runSonarrGrab(seriesIds)}
+          onSearch={(seriesIds) => void runSonarrSearch(seriesIds)}
           rows={sonarrRows}
           statusMessage={sonarrStatus}
         />

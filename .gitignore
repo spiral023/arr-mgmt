@@ -1,7 +1,10 @@
 node_modules
+.env
+.env.local
 out
 release
 release-new
+release-fixed
 dist
 test-results
 playwright-report

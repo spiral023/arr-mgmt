@@ -3,12 +3,16 @@ import { analyzeSonarrSeries } from "./arr/analysis-service";
 import type { MediaItemAnalysis } from "./arr/arr-types";
 import { RadarrClient } from "./arr/radarr-client";
 import { SonarrClient } from "./arr/sonarr-client";
+import { getNonFunEpisodeIds, selectBestFunRelease } from "./arr/sonarr-operations";
+import { mapConcurrent } from "./async/map-concurrent";
 import type { InstanceStore } from "./instances/instance-store";
 import type { JobRunner } from "./scheduler/job-runner";
 import type {
   InstanceConfigInput,
   InstanceKind,
   InstanceTestResult,
+  SonarrActionResult,
+  SonarrSeriesActionInput,
   SonarrSeriesTableRow,
 } from "../shared/ipc-contracts";
 
@@ -18,6 +22,7 @@ export type IpcState = {
 };
 
 let sonarrRows: SonarrSeriesTableRow[] = [];
+const sonarrCandidates = new Map<number, { seriesId: number; release: import("./arr/arr-types").ArrRelease }>();
 
 export function registerIpcHandlers(state: IpcState): void {
   ipcMain.handle("jobs:list", () => state.jobRunner.listJobs());
@@ -63,6 +68,12 @@ export function registerIpcHandlers(state: IpcState): void {
     search: { used: 0, remaining: 2000, limit: 2000 },
     grab: { used: 0, remaining: 400, limit: 400 },
   }));
+  ipcMain.handle("sonarr:search", async (_event, payload: unknown): Promise<SonarrActionResult> => {
+    return searchSonarrCandidates(state.instanceStore, assertSeriesActionInput(payload));
+  });
+  ipcMain.handle("sonarr:grab", async (_event, payload: unknown): Promise<SonarrActionResult> => {
+    return grabSonarrCandidates(state.instanceStore, assertSeriesActionInput(payload));
+  });
   ipcMain.handle("settings:get", () => ({
     instances: state.instanceStore.list(),
   }));
@@ -94,17 +105,76 @@ export function registerIpcHandlers(state: IpcState): void {
   });
 }
 
+async function searchSonarrCandidates(
+  instanceStore: InstanceStore,
+  input: SonarrSeriesActionInput,
+): Promise<SonarrActionResult> {
+  const config = instanceStore.getWithApiKey("sonarr");
+  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  let searchedEpisodes = 0;
+  let candidatesFound = 0;
+
+  for (const seriesId of input.seriesIds) {
+    const episodes = await client.getEpisodes(seriesId, true);
+    const episodeIds = getNonFunEpisodeIds(episodes);
+    searchedEpisodes += episodeIds.length;
+
+    for (const episodeId of episodeIds) {
+      const releases = await client.getReleasesForEpisode(episodeId);
+      const candidate = selectBestFunRelease(releases);
+      if (candidate) {
+        sonarrCandidates.set(episodeId, { seriesId, release: candidate });
+        candidatesFound += 1;
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    message: `Searched ${searchedEpisodes} non-FuN episodes, found ${candidatesFound} FuN* candidates.`,
+    searchedEpisodes,
+    candidatesFound,
+  };
+}
+
+async function grabSonarrCandidates(
+  instanceStore: InstanceStore,
+  input: SonarrSeriesActionInput,
+): Promise<SonarrActionResult> {
+  const config = instanceStore.getWithApiKey("sonarr");
+  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  const selected = [...sonarrCandidates.entries()].filter(([, candidate]) => input.seriesIds.includes(candidate.seriesId));
+  let grabbed = 0;
+  let failed = 0;
+
+  for (const [episodeId, candidate] of selected) {
+    try {
+      await client.grabRelease(candidate.release);
+      sonarrCandidates.delete(episodeId);
+      grabbed += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+
+  return {
+    ok: failed === 0,
+    message: `Grabbed ${grabbed} FuN* candidates${failed ? `, ${failed} failed` : ""}.`,
+    grabbed,
+    failed,
+  };
+}
+
 async function analyzeSonarrLibrary(instanceStore: InstanceStore): Promise<SonarrSeriesTableRow[]> {
   const config = instanceStore.getWithApiKey("sonarr");
   const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
   const seriesList = await client.getSeries();
   const analyzedAt = new Date();
-  const rows: SonarrSeriesTableRow[] = [];
 
-  for (const series of seriesList) {
+  const rows = await mapConcurrent(seriesList, 8, async (series) => {
     const episodes = await client.getEpisodes(series.id, true);
-    rows.push(toSonarrRow(analyzeSonarrSeries(series, episodes, analyzedAt)));
-  }
+    return toSonarrRow(analyzeSonarrSeries(series, episodes, analyzedAt));
+  });
 
   return rows.sort((a, b) => a.title.localeCompare(b.title));
 }
@@ -149,17 +219,30 @@ function assertInstanceInput(payload: unknown): InstanceConfigInput {
   };
 }
 
+function assertSeriesActionInput(payload: unknown): SonarrSeriesActionInput {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Invalid Sonarr action payload");
+  }
+  const value = payload as Partial<SonarrSeriesActionInput>;
+  if (!Array.isArray(value.seriesIds)) {
+    throw new Error("seriesIds must be an array");
+  }
+  return {
+    seriesIds: value.seriesIds.filter((id): id is number => Number.isInteger(id) && id > 0),
+  };
+}
+
 function formatDateTime(value: string): string {
   const date = new Date(value);
   return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
 async function waitForJobCompletion(jobRunner: JobRunner, jobId: string): Promise<void> {
-  for (let i = 0; i < 600; i += 1) {
+  for (let i = 0; i < 1200; i += 1) {
     const job = jobRunner.listJobs().find((candidate) => candidate.id === jobId);
     if (job?.status === "completed" || job?.status === "failed") {
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }

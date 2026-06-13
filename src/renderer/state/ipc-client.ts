@@ -3,7 +3,9 @@ import type {
   InstanceConfigView,
   InstanceTestResult,
   IpcChannel,
+  SonarrActionResult,
   SonarrSeriesTableRow,
+  SonarrSeriesActionInput,
 } from "../../shared/ipc-contracts";
 
 export async function invokeIpc<T>(channel: IpcChannel, payload?: unknown): Promise<T> {
@@ -31,6 +33,14 @@ export function analyzeSonarr(): Promise<unknown> {
 
 export function getSonarrRows(): Promise<SonarrSeriesTableRow[]> {
   return invokeIpc<SonarrSeriesTableRow[]>("library:sonarr");
+}
+
+export function searchSonarrSeries(seriesIds: number[]): Promise<SonarrActionResult> {
+  return invokeIpc<SonarrActionResult>("sonarr:search", { seriesIds } satisfies SonarrSeriesActionInput);
+}
+
+export function grabSonarrSeries(seriesIds: number[]): Promise<SonarrActionResult> {
+  return invokeIpc<SonarrActionResult>("sonarr:grab", { seriesIds } satisfies SonarrSeriesActionInput);
 }
 
 function getBrowserFallback<T>(channel: IpcChannel): T {

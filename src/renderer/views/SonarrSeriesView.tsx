@@ -92,11 +92,15 @@ const statusTone: Record<SeriesStatus, StatusTone> = {
 export function SonarrSeriesView({
   analyzing = false,
   onAnalyze,
+  onGrab,
+  onSearch,
   rows: liveRows,
   statusMessage = "Ready",
 }: {
   analyzing?: boolean;
   onAnalyze?: () => void;
+  onGrab?: (seriesIds: number[]) => void;
+  onSearch?: (seriesIds: number[]) => void;
   rows?: SonarrSeriesTableRow[];
   statusMessage?: string;
 }) {
@@ -229,10 +233,21 @@ export function SonarrSeriesView({
             <IconButton disabled={selectedRows.length === 0 || analyzing} icon={Radar} label="Analyze selected series" onClick={onAnalyze} tone="success">
               Analyze selected
             </IconButton>
-            <IconButton disabled={selectedRows.length === 0} icon={Search} label="Search non-FuN selected series">
+            <IconButton
+              disabled={selectedRows.length === 0}
+              icon={Search}
+              label="Search non-FuN selected series"
+              onClick={() => onSearch?.(selectedRows.map((row) => row.original.arrId))}
+            >
               Search non-FuN
             </IconButton>
-            <IconButton disabled={selectedRows.length === 0} icon={Zap} label="Grab available FuN releases" tone="warning">
+            <IconButton
+              disabled={selectedRows.length === 0}
+              icon={Zap}
+              label="Grab available FuN releases"
+              onClick={() => onGrab?.(selectedRows.map((row) => row.original.arrId))}
+              tone="warning"
+            >
               Grab FuN*
             </IconButton>
           </>

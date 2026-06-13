@@ -9,7 +9,22 @@ export type IpcChannel =
   | "library:radarr"
   | "jobs:list"
   | "jobs:enqueue"
-  | "quota:summary";
+  | "quota:summary"
+  | "sonarr:search"
+  | "sonarr:grab";
+
+export type SonarrSeriesActionInput = {
+  seriesIds: number[];
+};
+
+export type SonarrActionResult = {
+  ok: boolean;
+  message: string;
+  searchedEpisodes?: number;
+  candidatesFound?: number;
+  grabbed?: number;
+  failed?: number;
+};
 
 export type InstanceKind = "sonarr" | "radarr";
 
