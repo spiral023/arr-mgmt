@@ -11,7 +11,7 @@ export function createAppShell(): BrowserWindow {
     title: "ARR Ops",
     backgroundColor: "#090a0b",
     webPreferences: {
-      preload: join(__dirname, "../preload/index.cjs"),
+      preload: join(__dirname, "../preload/index.mjs"),
       contextIsolation: true,
       nodeIntegration: false,
     },
