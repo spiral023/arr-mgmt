@@ -1,0 +1,207 @@
+import { Bell, Clock3, Database, KeyRound, Save, Shield, Timer, Wifi } from "lucide-react";
+import { IconButton } from "../components/IconButton";
+import { StatusPill } from "../components/StatusPill";
+
+const fieldClassName =
+  "h-10 w-full rounded-md border border-white/10 bg-ink-950 px-3 text-sm text-ink-200 outline-none shadow-surface transition-[background-color,border-color,box-shadow] duration-150 ease-out placeholder:text-ink-400 focus:border-signal-cyan focus:ring-2 focus:ring-signal-cyan/30";
+
+const sectionClassName = "rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface";
+
+export function SettingsView() {
+  return (
+    <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+      <section className={sectionClassName}>
+        <Header icon={Database} title="ARR Instances" description="Store Sonarr and Radarr connection details locally. API keys are encrypted by Electron safeStorage." />
+        <div className="mt-4 grid gap-4">
+          <InstanceForm
+            apiKeyPlaceholder="Stored in encrypted local storage"
+            baseUrl="http://192.168.0.170:8989"
+            kind="Sonarr"
+            name="Sonarr"
+            status="connected"
+          />
+          <InstanceForm
+            apiKeyPlaceholder="Stored in encrypted local storage"
+            baseUrl="http://192.168.0.170:7878"
+            kind="Radarr"
+            name="Radarr"
+            status="connected"
+          />
+        </div>
+      </section>
+
+      <div className="flex flex-col gap-4">
+        <section className={sectionClassName}>
+          <Header icon={Shield} title="FuN* Matching" description="Prefixes are evaluated case-insensitively against releaseGroup." />
+          <div className="mt-4 grid gap-3">
+            <label>
+              <Label>Display name</Label>
+              <input className={fieldClassName} defaultValue="FuN*" />
+            </label>
+            <label>
+              <Label>Prefixes</Label>
+              <input className={fieldClassName} defaultValue="fun" />
+            </label>
+          </div>
+        </section>
+
+        <section className={sectionClassName}>
+          <Header icon={Timer} title="Shared Rolling 24h Budgets" description="Budgets apply to Sonarr and Radarr together." />
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <label>
+              <Label>Search limit</Label>
+              <input className={fieldClassName} defaultValue={2000} min={0} type="number" />
+            </label>
+            <label>
+              <Label>Grab limit</Label>
+              <input className={fieldClassName} defaultValue={400} min={0} type="number" />
+            </label>
+          </div>
+        </section>
+
+        <section className={sectionClassName}>
+          <Header icon={Clock3} title="Cooldowns" description="Avoid repeated searches before indexers have had time to change." />
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <label>
+              <Label>Episode search cooldown</Label>
+              <select className={fieldClassName} defaultValue="24">
+                <option value="6">6 hours</option>
+                <option value="12">12 hours</option>
+                <option value="24">24 hours</option>
+                <option value="48">48 hours</option>
+              </select>
+            </label>
+            <label>
+              <Label>Movie search cooldown</Label>
+              <select className={fieldClassName} defaultValue="24">
+                <option value="6">6 hours</option>
+                <option value="12">12 hours</option>
+                <option value="24">24 hours</option>
+                <option value="48">48 hours</option>
+              </select>
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <section className={sectionClassName}>
+        <Header icon={Clock3} title="Schedules" description="Scheduled jobs can run analysis, search, grab, or a combined workflow." />
+        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_11rem_10rem]">
+          <label>
+            <Label>Name</Label>
+            <input className={fieldClassName} defaultValue="Nightly FuN completion" />
+          </label>
+          <label>
+            <Label>Interval</Label>
+            <select className={fieldClassName} defaultValue="daily_time">
+              <option value="minutes">Every X minutes</option>
+              <option value="hours">Every X hours</option>
+              <option value="days">Every X days</option>
+              <option value="daily_time">Daily at time</option>
+            </select>
+          </label>
+          <label>
+            <Label>Time / value</Label>
+            <input className={fieldClassName} defaultValue="03:30" />
+          </label>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-3 text-sm text-ink-200">
+          <Check label="Analysis" />
+          <Check label="Search" />
+          <Check label="Grab" />
+          <Check label="Sonarr" />
+          <Check label="Radarr" />
+        </div>
+      </section>
+
+      <section className={sectionClassName}>
+        <Header icon={Bell} title="Notifications and Tray" description="The app is designed to stay resident and report important job outcomes." />
+        <div className="mt-4 grid gap-3">
+          <Check label="Show Windows notifications when jobs finish" />
+          <Check label="Notify when quota is exhausted" />
+          <Check label="Notify when FuN* candidates are found" />
+          <Check label="Keep app running when the window is closed" />
+          <Check label="Show tray controls for analysis and scheduler pause" />
+        </div>
+      </section>
+
+      <div className="xl:col-span-2">
+        <IconButton icon={Save} label="Save settings" tone="success">
+          Save settings
+        </IconButton>
+      </div>
+    </div>
+  );
+}
+
+function InstanceForm({
+  apiKeyPlaceholder,
+  baseUrl,
+  kind,
+  name,
+  status,
+}: {
+  apiKeyPlaceholder: string;
+  baseUrl: string;
+  kind: "Sonarr" | "Radarr";
+  name: string;
+  status: "connected" | "disabled";
+}) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-ink-950/55 p-4 shadow-surface">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Wifi aria-hidden="true" className="h-4 w-4 text-signal-cyan" />
+          <span className="font-semibold text-white">{kind}</span>
+        </div>
+        <StatusPill tone={status === "connected" ? "success" : "muted"}>{status}</StatusPill>
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-[10rem_1fr]">
+        <label>
+          <Label>Name</Label>
+          <input className={fieldClassName} defaultValue={name} />
+        </label>
+        <label>
+          <Label>Base URL</Label>
+          <input className={fieldClassName} defaultValue={baseUrl} />
+        </label>
+        <label className="md:col-span-2">
+          <Label>API key</Label>
+          <div className="flex gap-2">
+            <input className={fieldClassName} placeholder={apiKeyPlaceholder} type="password" />
+            <IconButton className="shrink-0" icon={KeyRound} label={`Test ${kind} connection`}>
+              Test
+            </IconButton>
+          </div>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function Header({ description, icon: Icon, title }: { description: string; icon: typeof Database; title: string }) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-white/10 bg-ink-950 text-signal-cyan shadow-surface">
+        <Icon aria-hidden="true" className="h-4 w-4" />
+      </div>
+      <div>
+        <h2 className="text-base font-semibold text-white">{title}</h2>
+        <p className="mt-1 text-sm text-ink-400">{description}</p>
+      </div>
+    </div>
+  );
+}
+
+function Label({ children }: { children: string }) {
+  return <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-ink-400">{children}</span>;
+}
+
+function Check({ label }: { label: string }) {
+  return (
+    <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-white/10 bg-ink-950/70 px-3 shadow-surface">
+      <input className="h-4 w-4 rounded border-white/20 bg-ink-950 accent-signal-cyan" defaultChecked type="checkbox" />
+      <span>{label}</span>
+    </label>
+  );
+}
