@@ -11,6 +11,7 @@ export type IpcChannel =
   | "jobs:list"
   | "jobs:events"
   | "jobs:enqueue"
+  | "jobs:cancel"
   | "quota:summary"
   | "sonarr:search"
   | "sonarr:grab"
@@ -58,6 +59,7 @@ export type SonarrSeriesTableRow = {
   id: string;
   arrId: number;
   title: string;
+  titleSlug?: string;
   monitored: boolean;
   episodes: number;
   files: number;
@@ -65,6 +67,7 @@ export type SonarrSeriesTableRow = {
   funFiles: number;
   funShare: number;
   nonFunFiles: number;
+  pendingFunCandidates: number;
   hasFiles: boolean;
   lastAnalyzed: string;
   lastSearched: string;

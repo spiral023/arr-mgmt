@@ -46,6 +46,7 @@ export function analyzeSonarrSeries(
     kind: "series",
     arrId: series.id,
     title: series.title,
+    titleSlug: series.titleSlug,
     sortTitle: series.sortTitle,
     year: series.year,
     monitored: series.monitored ?? false,
@@ -109,6 +110,7 @@ function buildMediaItemAnalysis(input: {
   kind: "series" | "movie";
   arrId: number;
   title: string;
+  titleSlug?: string;
   sortTitle?: string;
   year?: number;
   monitored: boolean;
@@ -125,6 +127,7 @@ function buildMediaItemAnalysis(input: {
     kind: input.kind,
     arrId: input.arrId,
     title: input.title,
+    titleSlug: input.titleSlug,
     sortTitle: input.sortTitle,
     year: input.year,
     monitored: input.monitored,

@@ -84,12 +84,12 @@ export function App() {
     ]);
   }
 
-  async function runSonarrAnalyze() {
+  async function runSonarrAnalyze(seriesIds?: number[]) {
     setActiveTab("sonarr");
     setSonarrAnalyzing(true);
-    setSonarrStatus("Queueing Sonarr analysis...");
+    setSonarrStatus(seriesIds && seriesIds.length > 0 ? `Queueing analysis for ${seriesIds.length} selected Sonarr series...` : "Queueing full Sonarr analysis...");
     try {
-      const job = await analyzeSonarr();
+      const job = await analyzeSonarr(seriesIds);
       setSonarrStatus(typeof job === "object" && job !== null && "id" in job ? `Analysis queued: ${String(job.id)}` : "Analysis queued");
       void refreshKpis();
     } catch (error) {
@@ -123,9 +123,9 @@ export function App() {
     }
   }
 
-  async function runOpenSonarrSeries(seriesId: number) {
+  async function runOpenSonarrSeries(seriesId: number, titleSlug?: string) {
     try {
-      await openSonarrSeries(seriesId);
+      await openSonarrSeries(seriesId, titleSlug);
     } catch (error) {
       setSonarrStatus(error instanceof Error ? error.message : String(error));
     }
@@ -146,9 +146,9 @@ export function App() {
       {activeTab === "sonarr" ? (
         <SonarrSeriesView
           analyzing={sonarrAnalyzing}
-          onAnalyze={() => void runSonarrAnalyze()}
+          onAnalyze={(seriesIds) => void runSonarrAnalyze(seriesIds)}
           onGrab={(seriesIds) => void runSonarrGrab(seriesIds)}
-          onOpenInSonarr={(seriesId) => void runOpenSonarrSeries(seriesId)}
+          onOpenInSonarr={(seriesId, titleSlug) => void runOpenSonarrSeries(seriesId, titleSlug)}
           onSearch={(seriesIds) => void runSonarrSearch(seriesIds)}
           rows={sonarrRows}
           statusMessage={sonarrStatus}

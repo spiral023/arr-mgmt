@@ -34,8 +34,10 @@ export type JobRunnerChange = {
 export type JobContext = {
   addEvent: (level: JobEvent["level"], message: string) => void;
   incrementProgress: (options?: { failed?: boolean }) => void;
+  isCancelled: () => boolean;
   setProgress: (current: number, total?: number) => void;
   setProgressTotal: (total: number) => void;
+  throwIfCancelled: () => void;
 };
 
 export type JobTask = {
@@ -104,6 +106,25 @@ export class JobRunner {
     return jobId ? this.events.filter((event) => event.jobId === jobId) : [...this.events];
   }
 
+  cancel(jobId: string): boolean {
+    const job = this.jobs.get(jobId);
+    if (!job || isFinished(job.status)) {
+      return false;
+    }
+
+    job.status = "cancelled";
+    if (!job.finishedAt) {
+      job.finishedAt = new Date().toISOString();
+    }
+    this.addEvent(job, "warning", `${job.name} cancelled`);
+    this.persistAndEmitJob(job);
+    for (const resolve of this.waiting.get(job.id) ?? []) {
+      resolve();
+    }
+    this.waiting.delete(job.id);
+    return true;
+  }
+
   async waitFor(jobId: string): Promise<void> {
     const job = this.jobs.get(jobId);
     if (job && isFinished(job.status)) {
@@ -120,6 +141,7 @@ export class JobRunner {
   private async run(jobId: string, task: JobTask): Promise<void> {
     const job = this.jobs.get(jobId);
     if (!job) return;
+    if (job.status === "cancelled") return;
 
     job.status = "running";
     job.startedAt = new Date().toISOString();
@@ -129,6 +151,9 @@ export class JobRunner {
     const context: JobContext = {
       addEvent: (level, message) => this.addEvent(job, level, message),
       incrementProgress: (options) => {
+        if (job.status === "cancelled") {
+          return;
+        }
         job.progressCurrent += 1;
         if (options?.failed) {
           job.failureCount += 1;
@@ -137,7 +162,11 @@ export class JobRunner {
         }
         this.persistAndEmitJob(job);
       },
+      isCancelled: () => job.status === "cancelled",
       setProgress: (current, total) => {
+        if (job.status === "cancelled") {
+          return;
+        }
         job.progressCurrent = current;
         if (typeof total === "number") {
           job.progressTotal = total;
@@ -145,8 +174,16 @@ export class JobRunner {
         this.persistAndEmitJob(job);
       },
       setProgressTotal: (total) => {
+        if (job.status === "cancelled") {
+          return;
+        }
         job.progressTotal = total;
         this.persistAndEmitJob(job);
+      },
+      throwIfCancelled: () => {
+        if (job.status === "cancelled") {
+          throw new JobCancelledError();
+        }
       },
     };
 
@@ -155,20 +192,27 @@ export class JobRunner {
         await task.run(context);
       } else {
         for (const step of task.steps ?? []) {
+          context.throwIfCancelled();
           await step();
           context.incrementProgress();
         }
       }
-      job.status = "completed";
-      this.addEvent(job, "info", `${job.name} completed`);
-      this.notifications.show({ title: "ARR Ops job completed", body: job.name });
+      if ((job.status as JobStatus) !== "cancelled") {
+        job.status = "completed";
+        this.addEvent(job, "info", `${job.name} completed`);
+        this.notifications.show({ title: "ARR Ops job completed", body: job.name });
+      }
     } catch (error) {
-      job.status = "failed";
-      job.failureCount += 1;
-      this.addEvent(job, "error", error instanceof Error ? error.message : String(error));
-      this.notifications.show({ title: "ARR Ops job failed", body: job.name });
+      if (error instanceof JobCancelledError || (job.status as JobStatus) === "cancelled") {
+        job.status = "cancelled";
+      } else {
+        job.status = "failed";
+        job.failureCount += 1;
+        this.addEvent(job, "error", error instanceof Error ? error.message : String(error));
+        this.notifications.show({ title: "ARR Ops job failed", body: job.name });
+      }
     } finally {
-      job.finishedAt = new Date().toISOString();
+      job.finishedAt ??= new Date().toISOString();
       this.persistAndEmitJob(job);
       for (const resolve of this.waiting.get(job.id) ?? []) {
         resolve();
@@ -195,6 +239,12 @@ export class JobRunner {
 
   private emitChange(type: JobRunnerChange["type"], job: Job, event?: JobEvent): void {
     this.options.onChange?.({ type, job: { ...job }, event });
+  }
+}
+
+class JobCancelledError extends Error {
+  constructor() {
+    super("Job cancelled");
   }
 }
 

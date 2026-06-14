@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Ban, ChevronDown, Pause, Play } from "lucide-react";
+import { Ban, ChevronDown } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
-import { listJobEvents, listJobs, subscribeToJobEvents } from "../state/ipc-client";
+import { cancelJob, listJobEvents, listJobs, subscribeToJobEvents } from "../state/ipc-client";
 import { createRefreshScheduler } from "../state/refresh-scheduler";
 import type { JobEventView, JobStatus, JobView } from "../../shared/ipc-contracts";
 
@@ -62,6 +62,17 @@ export function JobsView() {
     [refreshEvents],
   );
 
+  const cancelSelectedJob = useCallback(
+    async (jobId: string) => {
+      await cancelJob(jobId);
+      await refreshJobs();
+      if (expandedJobIdRef.current === jobId) {
+        await refreshEvents(jobId);
+      }
+    },
+    [refreshEvents, refreshJobs],
+  );
+
   useEffect(() => {
     void refreshJobs();
     const scheduler = createRefreshScheduler(refreshJobs, { minimumDelayMs: 1_000 });
@@ -108,8 +119,14 @@ export function JobsView() {
         cell: ({ row }) => (
           <div className="flex gap-2">
             <IconButton className="px-0" icon={ChevronDown} label={`Show events for ${row.original.job}`} onClick={() => selectJob(row.original.id)} />
-            <IconButton className="px-0" icon={row.original.status === "queued" ? Play : Pause} label={`Toggle ${row.original.job}`} />
-            <IconButton className="px-0" icon={Ban} label={`Cancel ${row.original.job}`} tone="danger" />
+            <IconButton
+              className="px-0"
+              disabled={isFinished(row.original.status)}
+              icon={Ban}
+              label={`Cancel ${row.original.job}`}
+              onClick={() => void cancelSelectedJob(row.original.id)}
+              tone="danger"
+            />
           </div>
         ),
         enableSorting: false,
@@ -118,7 +135,7 @@ export function JobsView() {
         size: 152,
       },
     ],
-    [selectJob],
+    [cancelSelectedJob, selectJob],
   );
 
   const activeEvents = events;
@@ -148,6 +165,10 @@ export function JobsView() {
       </section>
     </div>
   );
+}
+
+function isFinished(status: JobStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "blocked_by_budget";
 }
 
 function toJobRow(job: JobView): JobRow {

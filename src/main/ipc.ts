@@ -43,6 +43,16 @@ export function registerIpcHandlers(state: IpcState): void {
         : undefined;
     return state.jobRunner.listEvents(jobId);
   });
+  ipcMain.handle("jobs:cancel", (_event, payload: unknown) => {
+    const jobId =
+      typeof payload === "object" && payload !== null && "jobId" in payload && typeof payload.jobId === "string"
+        ? payload.jobId
+        : undefined;
+    if (!jobId) {
+      throw new Error("jobId is required");
+    }
+    return { ok: state.jobRunner.cancel(jobId) };
+  });
   ipcMain.handle("jobs:enqueue", async (_event, payload: unknown) => {
     const name =
       typeof payload === "object" && payload !== null && "name" in payload && typeof payload.name === "string"
@@ -54,7 +64,11 @@ export function registerIpcHandlers(state: IpcState): void {
         : "";
 
     if (target === "sonarr") {
-      return enqueueSonarrAnalysis(state, name);
+      const seriesIds =
+        typeof payload === "object" && payload !== null && "seriesIds" in payload && Array.isArray(payload.seriesIds)
+          ? payload.seriesIds.filter((id): id is number => Number.isInteger(id) && id > 0)
+          : undefined;
+      return enqueueSonarrAnalysis(state, name, seriesIds);
     }
 
     return state.jobRunner.enqueue({
@@ -100,11 +114,17 @@ export function registerIpcHandlers(state: IpcState): void {
       typeof payload === "object" && payload !== null && "seriesId" in payload && Number.isInteger(payload.seriesId)
         ? payload.seriesId
         : undefined;
+    const titleSlug =
+      typeof payload === "object" && payload !== null && "titleSlug" in payload && typeof payload.titleSlug === "string"
+        ? payload.titleSlug
+        : undefined;
     if (!seriesId) {
       throw new Error("seriesId is required");
     }
     const config = state.instanceStore.getWithApiKey("sonarr");
-    await shell.openExternal(`${config.baseUrl.replace(/\/+$/, "")}/series/${seriesId}`);
+    const rows = state.repositories.mediaItems.listSonarrRows();
+    const rowSlug = rows.find((row) => row.arrId === seriesId)?.titleSlug;
+    await shell.openExternal(`${config.baseUrl.replace(/\/+$/, "")}/series/${encodeURIComponent(titleSlug ?? rowSlug ?? String(seriesId))}`);
     return { ok: true };
   });
   ipcMain.handle("settings:get", () => ({
@@ -148,12 +168,13 @@ export function registerIpcHandlers(state: IpcState): void {
   });
 }
 
-function enqueueSonarrAnalysis(state: IpcState, name = "Analyze Sonarr") {
+function enqueueSonarrAnalysis(state: IpcState, name = "Analyze Sonarr", seriesIds?: number[]) {
   return state.jobRunner.enqueue({
     name,
     kind: "analysis",
-    target: "sonarr",
-    run: async (context) => analyzeSonarrLibrary(state, context),
+    target: seriesIds && seriesIds.length > 0 ? "selected" : "sonarr",
+    progressTotal: seriesIds?.length,
+    run: async (context) => analyzeSonarrLibrary(state, context, seriesIds),
   });
 }
 
@@ -177,28 +198,34 @@ function enqueueSonarrGrab(state: IpcState, input: SonarrSeriesActionInput) {
   });
 }
 
-async function analyzeSonarrLibrary(state: IpcState, context: JobContext): Promise<void> {
+async function analyzeSonarrLibrary(state: IpcState, context: JobContext, seriesIds?: number[]): Promise<void> {
   const config = state.instanceStore.getWithApiKey("sonarr");
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
   const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
   const seriesList = await client.getSeries();
+  const requestedSeriesIds = seriesIds && seriesIds.length > 0 ? new Set(seriesIds) : undefined;
+  const matchingSeries = requestedSeriesIds ? seriesList.filter((series) => requestedSeriesIds.has(series.id)) : seriesList;
   const analyzedArrIds = new Set(state.repositories.mediaItems.listAnalyzedArrIds("series", instanceId));
-  const seriesToAnalyze = selectSonarrSeriesForAnalysis(seriesList, analyzedArrIds);
+  const seriesToAnalyze = requestedSeriesIds ? matchingSeries : selectSonarrSeriesForAnalysis(matchingSeries, analyzedArrIds);
   const analyzedAt = new Date();
 
   context.setProgressTotal(seriesToAnalyze.length);
-  if (seriesToAnalyze.length < seriesList.length) {
+  if (requestedSeriesIds) {
+    context.addEvent("info", `Loaded ${seriesToAnalyze.length} selected Sonarr series`);
+  } else if (seriesToAnalyze.length < matchingSeries.length) {
     context.addEvent(
       "info",
-      `Resuming Sonarr analysis: ${seriesList.length - seriesToAnalyze.length} already stored, ${seriesToAnalyze.length} remaining`,
+      `Resuming Sonarr analysis: ${matchingSeries.length - seriesToAnalyze.length} already stored, ${seriesToAnalyze.length} remaining`,
     );
   } else {
-    context.addEvent("info", `Loaded ${seriesList.length} Sonarr series`);
+    context.addEvent("info", `Loaded ${matchingSeries.length} Sonarr series`);
   }
 
   await mapConcurrent(seriesToAnalyze, ANALYSIS_CONCURRENCY, async (series) => {
     try {
+      context.throwIfCancelled();
       const episodes = await client.getEpisodes(series.id, true);
+      context.throwIfCancelled();
       const item = analyzeSonarrSeries(series, episodes, analyzedAt);
       const mediaItemId = state.repositories.mediaItems.upsertAnalysis(instanceId, item);
       state.repositories.activityLog.insert({
@@ -230,6 +257,7 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
   const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
   const seriesEpisodes = await mapConcurrent(input.seriesIds, EPISODE_LOAD_CONCURRENCY, async (seriesId) => {
+    context.throwIfCancelled();
     const mediaItemId = state.repositories.mediaItems.findIdByArrId("series", seriesId, instanceId);
     const episodes = await client.getEpisodes(seriesId, true);
     return getNonFunEpisodeIds(episodes).map((episodeId) => ({ episodeId, mediaItemId, seriesId }));
@@ -242,7 +270,9 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
 
   await mapConcurrent(episodeTasks, SEARCH_CONCURRENCY, async (task) => {
     try {
+      context.throwIfCancelled();
       const releases = await client.getReleasesForEpisode(task.episodeId);
+      context.throwIfCancelled();
       const candidate = selectBestFunRelease(releases);
       if (candidate) {
         state.repositories.releaseCandidates.insert({
@@ -293,7 +323,9 @@ async function grabSonarrCandidates(state: IpcState, input: SonarrSeriesActionIn
 
   await mapConcurrent(candidates, GRAB_CONCURRENCY, async (candidate) => {
     try {
+      context.throwIfCancelled();
       await client.grabRelease(candidate.release);
+      context.throwIfCancelled();
       state.repositories.releaseCandidates.delete(candidate.id);
       state.repositories.activityLog.insert({
         action: "grab",

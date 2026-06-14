@@ -48,6 +48,52 @@ describe("DataTable", () => {
     expect(screen.getByRole("checkbox", { name: "Select Two" })).toBeChecked();
   });
 
+  it("selects all filtered rows from the header checkbox", () => {
+    const rows: RowData[] = [
+      { id: "one", title: "One" },
+      { id: "two", title: "Two" },
+    ];
+    const columns: Array<ColumnDef<RowData, unknown>> = [
+      {
+        cell: ({ row }) => (
+          <input
+            aria-label={`Select ${row.original.title}`}
+            checked={row.getIsSelected()}
+            onChange={row.getToggleSelectedHandler()}
+            type="checkbox"
+          />
+        ),
+        enableSorting: false,
+        header: ({ table }) => (
+          <input
+            aria-label="Select all rows"
+            checked={table.getIsAllRowsSelected()}
+            onChange={table.getToggleAllRowsSelectedHandler()}
+            type="checkbox"
+          />
+        ),
+        id: "select",
+      },
+      { accessorKey: "title", header: "Title" },
+    ];
+
+    render(
+      <DataTable
+        bulkActions={() => null}
+        columns={columns}
+        data={rows}
+        getRowId={(row) => row.id}
+        title="Rows"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all rows" }));
+
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Select One" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select Two" })).toBeChecked();
+  });
+
   it("does not mount every row when the data set is large", () => {
     const rows: RowData[] = Array.from({ length: 500 }, (_, index) => ({
       id: String(index),

@@ -22,7 +22,7 @@ describe("isFunReleaseGroup", () => {
 describe("analysis aggregation", () => {
   it("aggregates Sonarr FuN counts and sizes from episode fixtures", () => {
     const result = analyzeSonarrSeries(
-      { id: 7, title: "Example Series", monitored: true },
+      { id: 7, title: "Example Series", titleSlug: "example-series", monitored: true },
       [
         {
           id: 101,
@@ -64,6 +64,7 @@ describe("analysis aggregation", () => {
       kind: "series",
       arrId: 7,
       title: "Example Series",
+      titleSlug: "example-series",
       totalChildren: 4,
       childrenWithFile: 3,
       funChildren: 1,

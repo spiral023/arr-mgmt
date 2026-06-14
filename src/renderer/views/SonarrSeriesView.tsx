@@ -4,7 +4,7 @@ import { ExternalLink, Eye, Radar, Search, Zap } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
-import { updateColumnFilter } from "../state/table-state";
+import { updateColumnFilter, type TableFilterValue } from "../state/table-state";
 import type { SonarrSeriesTableRow } from "../../shared/ipc-contracts";
 
 type SeriesStatus = "ready" | "searchable" | "cooldown" | "failed";
@@ -28,9 +28,9 @@ export function SonarrSeriesView({
   statusMessage = "Ready",
 }: {
   analyzing?: boolean;
-  onAnalyze?: () => void;
+  onAnalyze?: (seriesIds?: number[]) => void;
   onGrab?: (seriesIds: number[]) => void;
-  onOpenInSonarr?: (seriesId: number) => void;
+  onOpenInSonarr?: (seriesId: number, titleSlug?: string) => void;
   onSearch?: (seriesIds: number[]) => void;
   rows?: SonarrSeriesTableRow[];
   statusMessage?: string;
@@ -109,7 +109,11 @@ export function SonarrSeriesView({
       },
       {
         accessorKey: "funShare",
-        cell: ({ getValue }) => <NumberCell tone="good" value={formatPercent(getValue<number>())} />,
+        cell: ({ getValue }) => {
+          const value = getValue<number>();
+          return <NumberCell tone={value < 0.7 ? "danger" : value < 1 ? "warning" : "good"} value={formatPercent(value)} />;
+        },
+        filterFn: funShareFilter,
         header: "FuN* share",
         size: 120,
       },
@@ -119,6 +123,13 @@ export function SonarrSeriesView({
         filterFn: positiveNumberFilter,
         header: "Non-FuN",
         size: 104,
+      },
+      {
+        accessorKey: "pendingFunCandidates",
+        cell: ({ getValue }) => <NumberCell tone={getValue<number>() > 0 ? "good" : "default"} value={getValue<number>()} />,
+        filterFn: positiveNumberFilter,
+        header: "Pending FuN*",
+        size: 128,
       },
       { accessorKey: "lastAnalyzed", header: "Last analyzed", size: 150 },
       { accessorKey: "lastSearched", header: "Last searched", size: 150 },
@@ -136,7 +147,12 @@ export function SonarrSeriesView({
         cell: ({ row }) => (
           <div className="flex gap-2">
             <IconButton className="px-0" icon={Eye} label={`Open details for ${row.original.title}`} onClick={() => setDetailsRow(row.original)} />
-            <IconButton className="px-0" icon={ExternalLink} label={`Open ${row.original.title} in Sonarr`} onClick={() => onOpenInSonarr?.(row.original.arrId)} />
+            <IconButton
+              className="px-0"
+              icon={ExternalLink}
+              label={`Open ${row.original.title} in Sonarr`}
+              onClick={() => onOpenInSonarr?.(row.original.arrId, row.original.titleSlug)}
+            />
           </div>
         ),
         enableSorting: false,
@@ -155,39 +171,45 @@ export function SonarrSeriesView({
           <h2 className="text-base font-semibold text-white">Sonarr Analysis</h2>
           <p className="mt-1 text-sm text-ink-400">{statusMessage}</p>
         </div>
-        <IconButton disabled={analyzing} icon={Radar} label="Analyze Sonarr library" onClick={onAnalyze} tone="success">
-          {analyzing ? "Analyzing..." : "Analyze Sonarr"}
+        <IconButton disabled={analyzing} icon={Radar} label="Analyze all Sonarr series" onClick={() => onAnalyze?.()} tone="success">
+          {analyzing ? "Analyzing..." : "Analyze all"}
         </IconButton>
       </div>
       <DataTable
         bulkActions={(selectedRows) => (
           <>
-            <IconButton disabled={selectedRows.length === 0 || analyzing} icon={Radar} label="Analyze selected series" onClick={onAnalyze} tone="success">
+            <IconButton
+              disabled={selectedRows.length === 0 || analyzing}
+              icon={Radar}
+              label="Analyze selected series"
+              onClick={() => onAnalyze?.(selectedRows.map((row) => row.original.arrId))}
+              tone="success"
+            >
               Analyze selected
             </IconButton>
             <IconButton
               disabled={selectedRows.length === 0}
               icon={Search}
-              label="Search non-FuN selected series"
+              label="Search selected non-FuN series"
               onClick={() => onSearch?.(selectedRows.map((row) => row.original.arrId))}
             >
-              Search non-FuN
+              Search selected
             </IconButton>
             <IconButton
               disabled={selectedRows.length === 0}
               icon={Zap}
-              label="Grab available FuN releases"
+              label="Grab selected pending FuN releases"
               onClick={() => onGrab?.(selectedRows.map((row) => row.original.arrId))}
               tone="warning"
             >
-              Grab FuN*
+              Grab selected
             </IconButton>
           </>
         )}
         columnFilters={columnFilters}
         columns={columns}
         data={resolvedRows}
-        description="Series-level coverage with cooldown, searchability, and FuN* share filters."
+        description="Series-level coverage with selected-only search/grab controls, pending FuN* candidates, and FuN* share filters."
         filters={filterControls}
         getRowId={(row) => row.id}
         initialSorting={[{ id: "nonFunFiles", desc: true }]}
@@ -207,6 +229,7 @@ export function SonarrSeriesView({
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Detail label="FuN* share" value={formatPercent(detailsRow.funShare)} />
+            <Detail label="Pending FuN*" value={String(detailsRow.pendingFunCandidates)} />
             <Detail label="Total size" value={formatBytes(detailsRow.totalSizeBytes)} />
             <Detail label="Last searched" value={detailsRow.lastSearched} />
             <Detail label="Last grabbed" value={detailsRow.lastGrabbed} />
@@ -233,8 +256,30 @@ function SonarrFilters({
   columnFilters: ColumnFiltersState;
   onColumnFiltersChange: (filters: ColumnFiltersState) => void;
 }) {
+  const activeFunShare = columnFilters.find((filter) => filter.id === "funShare")?.value;
+  const activePending = columnFilters.find((filter) => filter.id === "pendingFunCandidates")?.value;
+  const activeStatus = columnFilters.find((filter) => filter.id === "status")?.value;
+  const activeMonitored = columnFilters.find((filter) => filter.id === "monitored")?.value;
+
+  function toggleFilter(columnId: string, value: TableFilterValue, exclusiveColumns: string[] = [columnId]) {
+    let next = columnFilters;
+    for (const column of exclusiveColumns) {
+      next = updateColumnFilter(next, column, "");
+    }
+    const isActive = columnFilters.some((filter) => filter.id === columnId && filter.value === value);
+    if (!isActive) {
+      next = updateColumnFilter(next, columnId, value);
+    }
+    onColumnFiltersChange(next);
+  }
+
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap items-center gap-2">
+      <QuickFilterButton active={activeFunShare === "lt1"} label="Hide 100% FuN*" onClick={() => toggleFilter("funShare", "lt1")} />
+      <QuickFilterButton active={activeFunShare === "lt70"} label="FuN* <70%" onClick={() => toggleFilter("funShare", "lt70")} />
+      <QuickFilterButton active={activePending === "positive"} label="Pending FuN*" onClick={() => toggleFilter("pendingFunCandidates", "positive")} />
+      <QuickFilterButton active={activeStatus === "searchable"} label="Searchable" onClick={() => toggleFilter("status", "searchable")} />
+      <QuickFilterButton active={activeMonitored === true} label="Monitored" onClick={() => toggleFilter("monitored", true)} />
       <FilterSelect
         label="FuN state"
         onChange={(value) => {
@@ -276,6 +321,31 @@ function SonarrFilters({
   );
 }
 
+function QuickFilterButton({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      aria-pressed={active}
+      className={`h-10 rounded-md border px-3 text-sm font-medium outline-none shadow-surface transition-[background-color,border-color,color,box-shadow] duration-150 ease-out focus:border-signal-cyan focus:ring-2 focus:ring-signal-cyan/30 ${
+        active
+          ? "border-signal-cyan/40 bg-signal-cyan/10 text-signal-cyan"
+          : "border-white/10 bg-ink-950 text-ink-200 hover:bg-white/[0.06] hover:text-white"
+      }`}
+      onClick={onClick}
+      type="button"
+    >
+      {label}
+    </button>
+  );
+}
+
 function FilterSelect({
   label,
   onChange,
@@ -306,8 +376,15 @@ function BooleanCell({ value }: { value: boolean }) {
   return <StatusPill tone={value ? "success" : "muted"}>{value ? "yes" : "no"}</StatusPill>;
 }
 
-function NumberCell({ tone = "default", value }: { tone?: "default" | "good" | "warning"; value: number | string }) {
-  const toneClass = tone === "good" ? "text-signal-green" : tone === "warning" ? "text-signal-amber" : "text-ink-200";
+function NumberCell({ tone = "default", value }: { tone?: "default" | "good" | "warning" | "danger"; value: number | string }) {
+  const toneClass =
+    tone === "good"
+      ? "text-signal-green"
+      : tone === "warning"
+        ? "text-signal-amber"
+        : tone === "danger"
+          ? "text-red-400"
+          : "text-ink-200";
   return <span className={`font-mono text-sm tabular-nums ${toneClass}`}>{value}</span>;
 }
 
@@ -317,6 +394,13 @@ function booleanFilter(row: { getValue: (id: string) => unknown }, columnId: str
 
 function positiveNumberFilter(row: { getValue: (id: string) => unknown }, columnId: string, value: unknown) {
   return value !== "positive" || Number(row.getValue(columnId)) > 0;
+}
+
+function funShareFilter(row: { getValue: (id: string) => unknown }, columnId: string, value: unknown) {
+  const share = Number(row.getValue(columnId));
+  if (value === "lt1") return share < 1;
+  if (value === "lt70") return share < 0.7;
+  return true;
 }
 
 function formatPercent(value: number) {

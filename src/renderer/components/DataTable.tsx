@@ -242,30 +242,29 @@ export function DataTable<TData extends object>({
                   const sortDirection = header.column.getIsSorted();
                   const SortIcon = sortDirection === "asc" ? ArrowUp : sortDirection === "desc" ? ArrowDown : ArrowUpDown;
 
+                  const headerContent = flexRender(header.column.columnDef.header, header.getContext());
+
                   return (
                     <th
                       className="whitespace-nowrap border-b border-white/10 px-3 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-ink-400"
                       key={header.id}
                       style={{ width: header.getSize() }}
                     >
-                      {header.isPlaceholder ? null : (
+                      {header.isPlaceholder ? null : header.column.getCanSort() ? (
                         <button
                           className={clsx(
                             "group inline-flex min-h-10 items-center gap-2 rounded px-1 text-left outline-none",
                             "transition-[background-color,color,transform] duration-150 ease-out active:scale-[0.98]",
-                            header.column.getCanSort()
-                              ? "cursor-pointer hover:bg-white/[0.04] hover:text-ink-200 focus-visible:ring-2 focus-visible:ring-signal-cyan/30"
-                              : "cursor-default",
+                            "cursor-pointer hover:bg-white/[0.04] hover:text-ink-200 focus-visible:ring-2 focus-visible:ring-signal-cyan/30",
                           )}
-                          disabled={!header.column.getCanSort()}
                           onClick={header.column.getToggleSortingHandler()}
                           type="button"
                         >
-                          {flexRender(header.column.columnDef.header, header.getContext())}
-                          {header.column.getCanSort() ? (
-                            <SortIcon aria-hidden="true" className="h-3.5 w-3.5 text-ink-400 group-hover:text-ink-200" />
-                          ) : null}
+                          {headerContent}
+                          <SortIcon aria-hidden="true" className="h-3.5 w-3.5 text-ink-400 group-hover:text-ink-200" />
                         </button>
+                      ) : (
+                        <div className="inline-flex min-h-10 items-center gap-2 px-1">{headerContent}</div>
                       )}
                     </th>
                   );

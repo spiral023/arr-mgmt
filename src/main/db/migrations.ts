@@ -20,6 +20,7 @@ const statements = [
     kind text not null check (kind in ('series', 'movie')),
     arr_id integer not null,
     title text not null,
+    title_slug text,
     sort_title text,
     year integer,
     monitored integer not null default 0,
@@ -129,6 +130,14 @@ export function migrateDatabase(db: AppDatabase): void {
     for (const statement of statements) {
       db.prepare(statement).run();
     }
+    ensureColumn(db, "media_items", "title_slug", "text");
   });
   migrate();
+}
+
+function ensureColumn(db: AppDatabase, table: string, column: string, type: string): void {
+  const columns = db.prepare(`pragma table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((item) => item.name === column)) {
+    db.prepare(`alter table ${table} add column ${column} ${type}`).run();
+  }
 }

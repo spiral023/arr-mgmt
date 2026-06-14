@@ -32,8 +32,12 @@ export function testInstance(input: InstanceConfigInput): Promise<InstanceTestRe
   return invokeIpc<InstanceTestResult>("instances:test", input);
 }
 
-export function analyzeSonarr(): Promise<unknown> {
-  return invokeIpc("jobs:enqueue", { name: "Analyze Sonarr", target: "sonarr" });
+export function analyzeSonarr(seriesIds?: number[]): Promise<unknown> {
+  return invokeIpc("jobs:enqueue", {
+    name: seriesIds && seriesIds.length > 0 ? "Analyze selected Sonarr series" : "Analyze Sonarr",
+    target: "sonarr",
+    seriesIds,
+  });
 }
 
 export function getLibrarySummary(): Promise<LibrarySummary> {
@@ -52,6 +56,10 @@ export function listJobEvents(jobId?: string): Promise<JobEventView[]> {
   return invokeIpc<JobEventView[]>("jobs:events", jobId ? { jobId } : undefined);
 }
 
+export function cancelJob(jobId: string): Promise<{ ok: boolean }> {
+  return invokeIpc<{ ok: boolean }>("jobs:cancel", { jobId });
+}
+
 export function getQuotaSummary(): Promise<QuotaSummary> {
   return invokeIpc<QuotaSummary>("quota:summary");
 }
@@ -68,8 +76,8 @@ export function grabSonarrSeries(seriesIds: number[]): Promise<SonarrActionResul
   return invokeIpc<SonarrActionResult>("sonarr:grab", { seriesIds } satisfies SonarrSeriesActionInput);
 }
 
-export function openSonarrSeries(seriesId: number): Promise<{ ok: boolean }> {
-  return invokeIpc<{ ok: boolean }>("sonarr:openSeries", { seriesId });
+export function openSonarrSeries(seriesId: number, titleSlug?: string): Promise<{ ok: boolean }> {
+  return invokeIpc<{ ok: boolean }>("sonarr:openSeries", { seriesId, titleSlug });
 }
 
 export function subscribeToJobEvents(callback: (payload: unknown) => void): () => void {

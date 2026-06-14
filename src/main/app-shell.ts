@@ -8,6 +8,7 @@ export function createAppShell(): BrowserWindow {
     height: 920,
     minWidth: 1100,
     minHeight: 720,
+    fullscreen: true,
     title: "ARR Ops",
     backgroundColor: "#090a0b",
     webPreferences: {

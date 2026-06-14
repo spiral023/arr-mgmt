@@ -52,6 +52,7 @@ export type ArrCommand = {
 export type SonarrSeries = {
   id: number;
   title: string;
+  titleSlug?: string;
   sortTitle?: string;
   monitored?: boolean;
   year?: number;
@@ -118,6 +119,7 @@ export type MediaItemAnalysis = {
   kind: "series" | "movie";
   arrId: number;
   title: string;
+  titleSlug?: string;
   sortTitle?: string;
   year?: number;
   monitored: boolean;

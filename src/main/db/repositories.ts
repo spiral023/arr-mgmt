@@ -49,6 +49,7 @@ export function createRepositories(db: AppDatabase) {
              kind,
              arr_id,
              title,
+             title_slug,
              sort_title,
              year,
              monitored,
@@ -59,9 +60,10 @@ export function createRepositories(db: AppDatabase) {
              total_size_bytes,
              fun_share,
              last_analyzed_at
-           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            on conflict(instance_id, kind, arr_id) do update set
              title = excluded.title,
+             title_slug = excluded.title_slug,
              sort_title = excluded.sort_title,
              year = excluded.year,
              monitored = excluded.monitored,
@@ -77,6 +79,7 @@ export function createRepositories(db: AppDatabase) {
           item.kind,
           item.arrId,
           item.title,
+          item.titleSlug ?? null,
           item.sortTitle ?? null,
           item.year ?? null,
           item.monitored ? 1 : 0,
@@ -194,11 +197,20 @@ export function createRepositories(db: AppDatabase) {
                from activity_log
                where action in ('search', 'grab')
                group by media_item_id
+             ),
+             pending_candidates as (
+               select
+                 media_item_id,
+                 count(*) as pendingFunCandidates
+               from release_candidates
+               where is_fun = 1
+               group by media_item_id
              )
              select
                mi.id,
                mi.arr_id as arrId,
                mi.title,
+               mi.title_slug as titleSlug,
                mi.monitored,
                mi.has_file as hasFiles,
                mi.total_children as episodes,
@@ -208,10 +220,12 @@ export function createRepositories(db: AppDatabase) {
                mi.fun_share as funShare,
                mi.last_analyzed_at as lastAnalyzed,
                la.lastSearched,
-               la.lastGrabbed
+               la.lastGrabbed,
+               coalesce(pc.pendingFunCandidates, 0) as pendingFunCandidates
              from media_items mi
              join instances i on i.id = mi.instance_id
              left join last_activity la on la.media_item_id = mi.id
+             left join pending_candidates pc on pc.media_item_id = mi.id
              where i.kind = 'sonarr' and mi.kind = 'series'
              order by mi.title collate nocase`,
           )
@@ -219,6 +233,7 @@ export function createRepositories(db: AppDatabase) {
           id: number;
           arrId: number;
           title: string;
+          titleSlug: string | null;
           monitored: 0 | 1;
           hasFiles: 0 | 1;
           episodes: number;
@@ -229,6 +244,7 @@ export function createRepositories(db: AppDatabase) {
           lastAnalyzed: string | null;
           lastSearched: string | null;
           lastGrabbed: string | null;
+          pendingFunCandidates: number;
         }>;
 
         return rows.map((row) => {
@@ -237,6 +253,7 @@ export function createRepositories(db: AppDatabase) {
             id: `series-${row.arrId}`,
             arrId: row.arrId,
             title: row.title,
+            titleSlug: row.titleSlug ?? undefined,
             monitored: Boolean(row.monitored),
             episodes: row.episodes,
             files: row.files,
@@ -244,6 +261,7 @@ export function createRepositories(db: AppDatabase) {
             funFiles: row.funFiles,
             funShare: row.funShare,
             nonFunFiles,
+            pendingFunCandidates: row.pendingFunCandidates,
             hasFiles: Boolean(row.hasFiles),
             lastAnalyzed: row.lastAnalyzed ?? "-",
             lastSearched: row.lastSearched ?? "-",

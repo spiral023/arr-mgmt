@@ -43,4 +43,63 @@ describe("JobRunner", () => {
     expect(updates).toContain(`job:${job.id}:1/2`);
     expect(updates).toContain(`job:${job.id}:2/2`);
   });
+
+  it("cancels a queued job before it starts", async () => {
+    let releaseFirstJob: () => void = () => undefined;
+    const runner = new JobRunner({ show: vi.fn() });
+
+    const firstJob = runner.enqueue({
+      kind: "analysis",
+      name: "Long job",
+      run: () => new Promise<void>((resolve) => {
+        releaseFirstJob = resolve;
+      }),
+    });
+    const queuedJob = runner.enqueue({
+      kind: "search",
+      name: "Queued job",
+      run: async () => {
+        throw new Error("cancelled queued jobs must not run");
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(runner.listJobs().find((item) => item.id === firstJob.id)?.status).toBe("running");
+    });
+    expect(runner.cancel(queuedJob.id)).toBe(true);
+    releaseFirstJob();
+    await runner.waitFor(firstJob.id);
+    await runner.waitFor(queuedJob.id);
+
+    const cancelledJob = runner.listJobs().find((job) => job.id === queuedJob.id);
+    expect(cancelledJob).toEqual(
+      expect.objectContaining({
+        status: "cancelled",
+      }),
+    );
+    expect(cancelledJob).not.toHaveProperty("startedAt");
+    expect(runner.listEvents(queuedJob.id).map((event) => event.message)).toContain("Queued job cancelled");
+  });
+
+  it("keeps a running job cancelled when its task returns", async () => {
+    let finishTask: () => void = () => undefined;
+    const runner = new JobRunner({ show: vi.fn() });
+    const job = runner.enqueue({
+      kind: "analysis",
+      name: "Running job",
+      run: () => new Promise<void>((resolve) => {
+        finishTask = resolve;
+      }),
+    });
+
+    await vi.waitFor(() => {
+      expect(runner.listJobs().find((item) => item.id === job.id)?.status).toBe("running");
+    });
+    expect(runner.cancel(job.id)).toBe(true);
+    finishTask();
+    await runner.waitFor(job.id);
+
+    expect(runner.listJobs().find((item) => item.id === job.id)?.status).toBe("cancelled");
+    expect(runner.listEvents(job.id).map((event) => event.message)).toContain("Running job cancelled");
+  });
 });

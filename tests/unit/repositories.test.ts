@@ -41,6 +41,20 @@ describe("repositories", () => {
       childArrId: 101,
       createdAt: new Date("2026-06-13T20:10:00.000Z"),
     });
+    repos.releaseCandidates.insert({
+      instanceId,
+      mediaItemId,
+      childArrId: 102,
+      release: { guid: "candidate-1", title: "Example.Series.S01E02.FuN", releaseGroup: "FuN" },
+      foundAt: new Date("2026-06-13T20:12:00.000Z"),
+    });
+    repos.releaseCandidates.insert({
+      instanceId,
+      mediaItemId,
+      childArrId: 103,
+      release: { guid: "candidate-2", title: "Example.Series.S01E03.FuN", releaseGroup: "FuN" },
+      foundAt: new Date("2026-06-13T20:13:00.000Z"),
+    });
 
     expect(repos.mediaItems.listSonarrRows()).toEqual([
       expect.objectContaining({
@@ -52,8 +66,10 @@ describe("repositories", () => {
         lastGrabbed: "2026-06-13T20:10:00.000Z",
         lastSearched: "2026-06-13T20:05:00.000Z",
         nonFunFiles: 1,
+        pendingFunCandidates: 2,
         status: "searchable",
         title: "Example Series",
+        titleSlug: "example-series",
       }),
     ]);
   });
@@ -96,6 +112,7 @@ function analysis(): MediaItemAnalysis {
     monitored: true,
     nonFunChildren: 1,
     title: "Example Series",
+    titleSlug: "example-series",
     totalChildren: 2,
     totalSizeBytes: 3_000,
   };
