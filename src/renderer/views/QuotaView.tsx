@@ -1,64 +1,71 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Plus } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
+import { getQuotaSummary, getRecentActivity, recordManualGrab } from "../state/ipc-client";
+import type { ActivityRowView, QuotaSummary } from "../../shared/ipc-contracts";
 
-interface QuotaActionRow {
-  action: string;
-  app: "sonarr" | "radarr" | "external";
-  at: string;
-  count: number;
-  item: string;
-  quotaType: "search" | "grab";
-  status: "success" | "failed" | "blocked";
-}
+const emptyQuota: QuotaSummary = {
+  search: { used: 0, remaining: 0, limit: 0 },
+  grab: { used: 0, remaining: 0, limit: 0 },
+};
 
-const quotaActions: QuotaActionRow[] = [
-  { action: "search", app: "sonarr", at: "22:01:18", count: 1, item: "Criminal Record S01E07", quotaType: "search", status: "success" },
-  { action: "grab", app: "radarr", at: "21:58:44", count: 1, item: "Nicht noch ein Teenie-Film", quotaType: "grab", status: "blocked" },
-  { action: "manual_grab_entry", app: "external", at: "21:31:09", count: 12, item: "Manual SABnzbd import", quotaType: "grab", status: "success" },
-  { action: "search", app: "radarr", at: "20:29:27", count: 1, item: "Candidate scan batch", quotaType: "search", status: "success" },
-];
-
-const statusTone: Record<QuotaActionRow["status"], StatusTone> = {
-  blocked: "warning",
+const statusTone: Record<string, StatusTone> = {
+  blocked_by_budget: "warning",
   failed: "danger",
+  skipped: "warning",
+  started: "running",
   success: "success",
 };
 
-const usage = [
-  { label: "Search", limit: 2000, tone: "cyan", used: 417 },
-  { label: "Grab", limit: 400, tone: "amber", used: 61 },
-];
-
-const timeline = [
-  { hour: "00", search: 16, grab: 2 },
-  { hour: "04", search: 48, grab: 5 },
-  { hour: "08", search: 22, grab: 1 },
-  { hour: "12", search: 93, grab: 14 },
-  { hour: "16", search: 68, grab: 10 },
-  { hour: "20", search: 170, grab: 29 },
-];
-
 export function QuotaView() {
-  const columns = useMemo<Array<ColumnDef<QuotaActionRow, unknown>>>(
+  const [activity, setActivity] = useState<ActivityRowView[]>([]);
+  const [count, setCount] = useState(1);
+  const [message, setMessage] = useState("Ready");
+  const [note, setNote] = useState("");
+  const [quota, setQuota] = useState<QuotaSummary>(emptyQuota);
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  async function refresh() {
+    const [nextQuota, nextActivity] = await Promise.all([getQuotaSummary(), getRecentActivity()]);
+    setQuota(nextQuota);
+    setActivity(nextActivity.filter((row) => row.quota !== "none"));
+  }
+
+  async function submitManualGrab(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage("Recording manual grab entry...");
+    try {
+      const nextQuota = await recordManualGrab({ count, note });
+      setQuota(nextQuota);
+      setNote("");
+      setMessage(`Recorded ${count} manual grab ${count === 1 ? "entry" : "entries"}`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  const columns = useMemo<Array<ColumnDef<ActivityRowView, unknown>>>(
     () => [
-      { accessorKey: "at", cell: ({ getValue }) => <Mono>{getValue<string>()}</Mono>, header: "Time", size: 96 },
+      { accessorKey: "at", cell: ({ getValue }) => <Mono>{getValue<string>()}</Mono>, header: "Time", size: 150 },
       { accessorKey: "app", header: "Source", size: 96 },
       { accessorKey: "action", header: "Action", size: 150 },
-      { accessorKey: "quotaType", header: "Quota", size: 96 },
-      { accessorKey: "count", cell: ({ getValue }) => <Mono>{String(getValue<number>())}</Mono>, header: "Count", size: 88 },
-      { accessorKey: "item", header: "Item", size: 280 },
+      { accessorKey: "quota", header: "Quota", size: 96 },
+      { accessorKey: "item", header: "Item", size: 300 },
       {
         accessorKey: "status",
         cell: ({ getValue }) => {
-          const status = getValue<QuotaActionRow["status"]>();
-          return <StatusPill tone={statusTone[status]}>{status}</StatusPill>;
+          const status = getValue<string>();
+          return <StatusPill tone={statusTone[status] ?? "idle"}>{status}</StatusPill>;
         },
         header: "Status",
-        size: 112,
+        size: 132,
       },
     ],
     [],
@@ -68,51 +75,27 @@ export function QuotaView() {
     <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
       <section className="flex flex-col gap-4">
         <div className="rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface">
-          <h2 className="text-base font-semibold text-white">Rolling 24h Usage</h2>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-base font-semibold text-white">Rolling 24h Usage</h2>
+            <IconButton icon={RefreshCw} label="Refresh quotas" onClick={() => void refresh()} />
+          </div>
           <div className="mt-4 grid gap-3">
-            {usage.map((item) => {
-              const percent = Math.round((item.used / item.limit) * 100);
-              return (
-                <div className="rounded-md border border-white/10 bg-ink-950/60 p-3" key={item.label}>
-                  <div className="flex items-center justify-between gap-3 text-sm">
-                    <span className="font-semibold text-ink-200">{item.label}</span>
-                    <span className="font-mono tabular-nums text-ink-200">
-                      {item.used} / {item.limit}
-                    </span>
-                  </div>
-                  <div className="mt-2 h-2 overflow-hidden rounded bg-ink-800">
-                    <div
-                      className={item.tone === "cyan" ? "h-full rounded bg-signal-cyan" : "h-full rounded bg-signal-amber"}
-                      style={{ width: `${percent}%` }}
-                    />
-                  </div>
-                  <div className="mt-2 text-xs text-ink-400">
-                    <span className="font-mono tabular-nums">{item.limit - item.used}</span> remaining
-                  </div>
-                </div>
-              );
-            })}
+            <UsageMeter label="Search" limit={quota.search.limit} remaining={quota.search.remaining} tone="cyan" used={quota.search.used} />
+            <UsageMeter label="Grab" limit={quota.grab.limit} remaining={quota.grab.remaining} tone="amber" used={quota.grab.used} />
           </div>
         </div>
 
-        <form className="rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface" onSubmit={(event) => event.preventDefault()}>
+        <form className="rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface" onSubmit={submitManualGrab}>
           <h2 className="text-base font-semibold text-white">Manual Grab Entry</h2>
+          <div className="mt-3 rounded-md border border-white/10 bg-ink-950/60 px-3 py-2 text-sm text-ink-200 shadow-surface">{message}</div>
           <div className="mt-4 grid gap-3 sm:grid-cols-[8rem_1fr]">
             <label className="block">
               <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-ink-400">Count</span>
-              <input className={fieldClassName} defaultValue={1} min={1} type="number" />
+              <input className={fieldClassName} min={1} onChange={(event) => setCount(Number(event.target.value))} type="number" value={count} />
             </label>
             <label className="block">
-              <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-ink-400">App source</span>
-              <select className={fieldClassName} defaultValue="external">
-                <option value="sonarr">sonarr</option>
-                <option value="radarr">radarr</option>
-                <option value="external">external</option>
-              </select>
-            </label>
-            <label className="block sm:col-span-2">
               <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-ink-400">Note</span>
-              <input className={fieldClassName} placeholder="External grab or manual import note" type="text" />
+              <input className={fieldClassName} onChange={(event) => setNote(event.target.value)} placeholder="External grab or manual import note" type="text" value={note} />
             </label>
           </div>
           <div className="mt-4">
@@ -123,24 +106,29 @@ export function QuotaView() {
         </form>
       </section>
 
-      <section className="flex flex-col gap-4">
-        <div className="rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface">
-          <h2 className="text-base font-semibold text-white">Usage Timeline</h2>
-          <div className="mt-4 grid grid-cols-6 gap-2">
-            {timeline.map((bucket) => (
-              <div className="rounded-md border border-white/10 bg-ink-950/60 p-2" key={bucket.hour}>
-                <div className="text-center font-mono text-xs tabular-nums text-ink-400">{bucket.hour}:00</div>
-                <div className="mt-3 flex h-28 items-end justify-center gap-1">
-                  <div className="w-4 rounded-t bg-signal-cyan" style={{ height: `${Math.max(8, bucket.search / 2)}%` }} />
-                  <div className="w-4 rounded-t bg-signal-amber" style={{ height: `${Math.max(8, bucket.grab * 3)}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <DataTable columns={columns} data={quotaActions} searchPlaceholder="Filter quota actions" title="Recent Quota Actions" />
+      <section className="min-w-0">
+        <DataTable columns={columns} data={activity} searchPlaceholder="Filter quota actions" title="Recent Quota Actions" />
       </section>
+    </div>
+  );
+}
+
+function UsageMeter({ label, limit, remaining, tone, used }: { label: string; limit: number; remaining: number; tone: "amber" | "cyan"; used: number }) {
+  const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+  return (
+    <div className="rounded-md border border-white/10 bg-ink-950/60 p-3">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="font-semibold text-ink-200">{label}</span>
+        <span className="font-mono tabular-nums text-ink-200">
+          {used} / {limit}
+        </span>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded bg-ink-800">
+        <div className={tone === "cyan" ? "h-full rounded bg-signal-cyan" : "h-full rounded bg-signal-amber"} style={{ width: `${percent}%` }} />
+      </div>
+      <div className="mt-2 text-xs text-ink-400">
+        <span className="font-mono tabular-nums">{remaining}</span> remaining
+      </div>
     </div>
   );
 }

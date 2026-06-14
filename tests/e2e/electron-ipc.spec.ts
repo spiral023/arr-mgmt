@@ -31,7 +31,7 @@ test("Electron app exposes the secure IPC bridge", async () => {
   await electronApp.close();
 });
 
-test("packaged app can test Sonarr settings and run analysis through IPC", async ({}, testInfo) => {
+test("packaged app can test Sonarr settings and run sample analysis through IPC", async ({}, testInfo) => {
   test.setTimeout(120_000);
   loadDotEnv();
   const executablePath = process.env.ARR_OPS_ELECTRON_EXE;
@@ -76,18 +76,28 @@ test("packaged app can test Sonarr settings and run analysis through IPC", async
       { baseUrl, apiKey },
     );
 
-    await page.evaluate(() => (globalThis as ArrOpsGlobal).arrOps?.invoke("jobs:enqueue", { name: "Analyze Sonarr", target: "sonarr" }));
+    const job = await page.evaluate(() => (globalThis as ArrOpsGlobal).arrOps?.invoke("jobs:enqueue", { name: "Analyze one Sonarr series", target: "sonarr", sampleSize: 1 }));
+    const jobId = typeof job === "object" && job !== null && "id" in job ? String(job.id) : "";
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            (jobId) =>
+              (globalThis as ArrOpsGlobal).arrOps?.invoke("jobs:list").then((jobs) => (jobs as Array<{ id: string; status: string }>).find((item) => item.id === jobId)?.status),
+            jobId,
+          ),
+        { timeout: 120_000 },
+      )
+      .toBe("completed");
     const rows = await page.evaluate(() => (globalThis as ArrOpsGlobal).arrOps?.invoke("library:sonarr"));
 
-    expect(rows).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          title: "Criminal Record",
-          episodes: expect.any(Number),
-          funShare: expect.any(Number),
-        }),
-      ]),
-    );
+    expect(rows).toEqual([
+      expect.objectContaining({
+        episodes: expect.any(Number),
+        funShare: expect.any(Number),
+        title: expect.any(String),
+      }),
+    ]);
   } finally {
     await electronApp?.close();
   }

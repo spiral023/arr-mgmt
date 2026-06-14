@@ -102,4 +102,32 @@ describe("JobRunner", () => {
     expect(runner.listJobs().find((item) => item.id === job.id)?.status).toBe("cancelled");
     expect(runner.listEvents(job.id).map((event) => event.message)).toContain("Running job cancelled");
   });
+
+  it("marks a running job as blocked by budget", async () => {
+    const runner = new JobRunner({ show: vi.fn() });
+    const job = runner.enqueue({
+      kind: "search",
+      name: "Search Sonarr",
+      run: async (context) => {
+        context.blockByBudget("Search budget exhausted");
+      },
+    });
+
+    await runner.waitFor(job.id);
+
+    expect(runner.listJobs().find((item) => item.id === job.id)).toEqual(
+      expect.objectContaining({
+        status: "blocked_by_budget",
+        finishedAt: expect.any(String),
+      }),
+    );
+    expect(runner.listEvents(job.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: "warning",
+          message: "Search budget exhausted",
+        }),
+      ]),
+    );
+  });
 });

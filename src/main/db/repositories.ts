@@ -1,5 +1,5 @@
 import type { AppDatabase } from "./client";
-import type { ActivityInsert, QuotaType } from "./schema";
+import type { ActivityInsert, ActivityStatus, QuotaType } from "./schema";
 import type { ArrRelease, MediaItemAnalysis } from "../arr/arr-types";
 import type { Job, JobEvent } from "../scheduler/job-runner";
 import type { InstanceKind, LibrarySummary, RadarrMovieTableRow, SonarrSeriesTableRow, StatsSummary } from "../../shared/ipc-contracts";
@@ -612,6 +612,16 @@ export function createRepositories(db: AppDatabase) {
         return Number(result.lastInsertRowid);
       },
 
+      update(id: number, input: { status: ActivityStatus; message?: string | null; payloadJson?: string | null }): void {
+        db.prepare(
+          `update activity_log
+           set status = ?,
+               message = coalesce(?, message),
+               payload_json = coalesce(?, payload_json)
+           where id = ?`,
+        ).run(input.status, input.message ?? null, input.payloadJson ?? null, id);
+      },
+
       countSince(quotaType: Exclude<QuotaType, "none">, now: Date, windowHours: number): number {
         const since = new Date(now.getTime() - windowHours * 60 * 60 * 1000).toISOString();
         const row = db
@@ -621,7 +631,7 @@ export function createRepositories(db: AppDatabase) {
              where quota_type = ?
                and created_at >= ?
                and created_at <= ?
-               and status in ('started', 'success')`,
+               and status in ('started', 'success', 'failed')`,
           )
           .get(quotaType, since, toIso(now)) as { count: number };
         return row.count;

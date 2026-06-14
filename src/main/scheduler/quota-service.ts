@@ -1,3 +1,4 @@
+import type { ActivityStatus } from "../db/schema";
 import type { createRepositories } from "../db/repositories";
 
 type Repositories = ReturnType<typeof createRepositories>;
@@ -13,6 +14,7 @@ export type QuotaConfig = {
 
 export type QuotaReservation = {
   allowed: boolean;
+  activityId?: number;
   remaining: number;
 };
 
@@ -22,7 +24,10 @@ export class QuotaService {
     private readonly config: QuotaConfig,
   ) {}
 
-  reserve(action: QuotaAction, details: { message?: string; payloadJson?: string } = {}): QuotaReservation {
+  reserve(
+    action: QuotaAction,
+    details: { childArrId?: number; instanceId?: number; mediaItemId?: number; message?: string; payloadJson?: string } = {},
+  ): QuotaReservation {
     const limit = this.getLimit(action);
     const used = this.repos.activityLog.countSince(action, this.config.now(), this.config.windowHours);
     const remaining = Math.max(0, limit - used);
@@ -30,6 +35,9 @@ export class QuotaService {
     if (remaining <= 0) {
       this.repos.activityLog.insert({
         action,
+        childArrId: details.childArrId,
+        instanceId: details.instanceId,
+        mediaItemId: details.mediaItemId,
         quotaType: action,
         status: "blocked_by_budget",
         message: details.message ?? `${action} blocked by budget`,
@@ -39,8 +47,11 @@ export class QuotaService {
       return { allowed: false, remaining: 0 };
     }
 
-    this.repos.activityLog.insert({
+    const activityId = this.repos.activityLog.insert({
       action,
+      childArrId: details.childArrId,
+      instanceId: details.instanceId,
+      mediaItemId: details.mediaItemId,
       quotaType: action,
       status: "started",
       message: details.message ?? `${action} reserved`,
@@ -48,7 +59,11 @@ export class QuotaService {
       createdAt: this.config.now(),
     });
 
-    return { allowed: true, remaining: remaining - 1 };
+    return { activityId, allowed: true, remaining: remaining - 1 };
+  }
+
+  complete(activityId: number, status: Extract<ActivityStatus, "success" | "failed">, message?: string): void {
+    this.repos.activityLog.update(activityId, { status, message });
   }
 
   recordManualGrab(count: number, note: string): void {

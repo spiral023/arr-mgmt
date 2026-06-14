@@ -14,6 +14,7 @@ export type IpcChannel =
   | "jobs:enqueue"
   | "jobs:cancel"
   | "quota:summary"
+  | "quota:manualGrab"
   | "sonarr:search"
   | "sonarr:grab"
   | "sonarr:openSeries"
@@ -175,6 +176,37 @@ export type StatsSummary = {
 export type QuotaSummary = {
   search: { used: number; remaining: number; limit: number };
   grab: { used: number; remaining: number; limit: number };
+};
+
+export type AppSettings = {
+  cooldownHours: { episodeSearch: number; movieSearch: number };
+  fun: { displayName: string; prefixes: string[] };
+  notifications: {
+    jobFinished: boolean;
+    quotaExhausted: boolean;
+    candidatesFound: boolean;
+  };
+  quota: { searchLimit: number; grabLimit: number; windowHours: number };
+  tray: { keepRunningOnClose: boolean; showControls: boolean };
+};
+
+export type AppSettingsInput = Partial<{
+  cooldownHours: Partial<AppSettings["cooldownHours"]>;
+  fun: Partial<AppSettings["fun"]>;
+  notifications: Partial<AppSettings["notifications"]>;
+  quota: Partial<AppSettings["quota"]>;
+  tray: Partial<AppSettings["tray"]>;
+}>;
+
+export type SettingsViewModel = {
+  appSettings: AppSettings;
+  instances: InstanceConfigView[];
+  onboardingCompleted: boolean;
+};
+
+export type ManualGrabInput = {
+  count: number;
+  note: string;
 };
 
 export type ActivityRowView = {

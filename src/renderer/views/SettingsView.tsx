@@ -1,8 +1,9 @@
 import { Bell, Clock3, Database, KeyRound, Save, Shield, Timer, Wifi } from "lucide-react";
+import type { ChangeEvent } from "react";
 import { useEffect, useState } from "react";
 import { IconButton } from "../components/IconButton";
 import { StatusPill } from "../components/StatusPill";
-import { listInstances, saveInstance, testInstance } from "../state/ipc-client";
+import { getSettings, listInstances, saveInstance, testInstance, updateAppSettings } from "../state/ipc-client";
 import type { InstanceConfigInput, InstanceConfigView, InstanceKind } from "../../shared/ipc-contracts";
 
 const fieldClassName =
@@ -12,10 +13,34 @@ const sectionClassName = "rounded-lg border border-white/10 bg-ink-900/80 p-4 sh
 
 export function SettingsView() {
   const [instances, setInstances] = useState<InstanceConfigView[]>([]);
+  const [candidatesFoundNotifications, setCandidatesFoundNotifications] = useState(true);
+  const [episodeCooldown, setEpisodeCooldown] = useState(24);
+  const [funDisplayName, setFunDisplayName] = useState("FuN*");
+  const [funPrefixes, setFunPrefixes] = useState("fun");
+  const [grabLimit, setGrabLimit] = useState(400);
+  const [jobFinishedNotifications, setJobFinishedNotifications] = useState(true);
+  const [keepRunningOnClose, setKeepRunningOnClose] = useState(true);
+  const [movieCooldown, setMovieCooldown] = useState(24);
   const [message, setMessage] = useState("Ready");
+  const [quotaExhaustedNotifications, setQuotaExhaustedNotifications] = useState(true);
+  const [searchLimit, setSearchLimit] = useState(2000);
+  const [showTrayControls, setShowTrayControls] = useState(true);
 
   useEffect(() => {
-    void listInstances().then(setInstances);
+    void getSettings().then((settings) => {
+      setInstances(settings.instances);
+      setCandidatesFoundNotifications(settings.appSettings.notifications.candidatesFound);
+      setEpisodeCooldown(settings.appSettings.cooldownHours.episodeSearch);
+      setFunDisplayName(settings.appSettings.fun.displayName);
+      setFunPrefixes(settings.appSettings.fun.prefixes.join(", "));
+      setGrabLimit(settings.appSettings.quota.grabLimit);
+      setJobFinishedNotifications(settings.appSettings.notifications.jobFinished);
+      setKeepRunningOnClose(settings.appSettings.tray.keepRunningOnClose);
+      setMovieCooldown(settings.appSettings.cooldownHours.movieSearch);
+      setQuotaExhaustedNotifications(settings.appSettings.notifications.quotaExhausted);
+      setSearchLimit(settings.appSettings.quota.searchLimit);
+      setShowTrayControls(settings.appSettings.tray.showControls);
+    });
   }, []);
 
   async function handleSave(input: InstanceConfigInput) {
@@ -33,6 +58,31 @@ export function SettingsView() {
     setMessage(`Testing ${input.kind}...`);
     const result = await testInstance(input);
     setMessage(result.ok ? `Connection OK: ${result.message}` : `Connection failed: ${result.message}`);
+  }
+
+  async function handleSaveGeneralSettings() {
+    setMessage("Saving general settings...");
+    try {
+      const saved = await updateAppSettings({
+        cooldownHours: { episodeSearch: episodeCooldown, movieSearch: movieCooldown },
+        fun: { displayName: funDisplayName, prefixes: funPrefixes.split(",") },
+        notifications: {
+          candidatesFound: candidatesFoundNotifications,
+          jobFinished: jobFinishedNotifications,
+          quotaExhausted: quotaExhaustedNotifications,
+        },
+        quota: { grabLimit, searchLimit, windowHours: 24 },
+        tray: { keepRunningOnClose, showControls: showTrayControls },
+      });
+      setEpisodeCooldown(saved.cooldownHours.episodeSearch);
+      setMovieCooldown(saved.cooldownHours.movieSearch);
+      setFunPrefixes(saved.fun.prefixes.join(", "));
+      setGrabLimit(saved.quota.grabLimit);
+      setSearchLimit(saved.quota.searchLimit);
+      setMessage("General settings saved");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
   }
 
   const sonarr = instances.find((instance) => instance.kind === "sonarr");
@@ -75,11 +125,11 @@ export function SettingsView() {
           <div className="mt-4 grid gap-3">
             <label>
               <Label>Display name</Label>
-              <input className={fieldClassName} defaultValue="FuN*" />
+              <input className={fieldClassName} onChange={(event) => setFunDisplayName(event.target.value)} value={funDisplayName} />
             </label>
             <label>
               <Label>Prefixes</Label>
-              <input className={fieldClassName} defaultValue="fun" />
+              <input className={fieldClassName} onChange={(event) => setFunPrefixes(event.target.value)} value={funPrefixes} />
             </label>
           </div>
         </section>
@@ -89,11 +139,11 @@ export function SettingsView() {
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <label>
               <Label>Search limit</Label>
-              <input className={fieldClassName} defaultValue={2000} min={0} type="number" />
+              <input className={fieldClassName} min={1} onChange={(event) => setSearchLimit(Number(event.target.value))} type="number" value={searchLimit} />
             </label>
             <label>
               <Label>Grab limit</Label>
-              <input className={fieldClassName} defaultValue={400} min={0} type="number" />
+              <input className={fieldClassName} min={1} onChange={(event) => setGrabLimit(Number(event.target.value))} type="number" value={grabLimit} />
             </label>
           </div>
         </section>
@@ -103,7 +153,7 @@ export function SettingsView() {
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <label>
               <Label>Episode search cooldown</Label>
-              <select className={fieldClassName} defaultValue="24">
+              <select className={fieldClassName} onChange={(event) => setEpisodeCooldown(Number(event.target.value))} value={episodeCooldown}>
                 <option value="6">6 hours</option>
                 <option value="12">12 hours</option>
                 <option value="24">24 hours</option>
@@ -112,7 +162,7 @@ export function SettingsView() {
             </label>
             <label>
               <Label>Movie search cooldown</Label>
-              <select className={fieldClassName} defaultValue="24">
+              <select className={fieldClassName} onChange={(event) => setMovieCooldown(Number(event.target.value))} value={movieCooldown}>
                 <option value="6">6 hours</option>
                 <option value="12">12 hours</option>
                 <option value="24">24 hours</option>
@@ -156,16 +206,16 @@ export function SettingsView() {
       <section className={sectionClassName}>
         <Header icon={Bell} title="Notifications and Tray" description="The app is designed to stay resident and report important job outcomes." />
         <div className="mt-4 grid gap-3">
-          <Check label="Show Windows notifications when jobs finish" />
-          <Check label="Notify when quota is exhausted" />
-          <Check label="Notify when FuN* candidates are found" />
-          <Check label="Keep app running when the window is closed" />
-          <Check label="Show tray controls for analysis and scheduler pause" />
+          <Check checked={jobFinishedNotifications} label="Show Windows notifications when jobs finish" onChange={setJobFinishedNotifications} />
+          <Check checked={quotaExhaustedNotifications} label="Notify when quota is exhausted" onChange={setQuotaExhaustedNotifications} />
+          <Check checked={candidatesFoundNotifications} label="Notify when FuN* candidates are found" onChange={setCandidatesFoundNotifications} />
+          <Check checked={keepRunningOnClose} label="Keep app running when the window is closed" onChange={setKeepRunningOnClose} />
+          <Check checked={showTrayControls} label="Show tray controls for analysis and scheduler pause" onChange={setShowTrayControls} />
         </div>
       </section>
 
       <div className="xl:col-span-2">
-        <IconButton icon={Save} label="Save settings" onClick={() => setMessage("Instance forms save individually. Use the Save buttons above.")} tone="success">
+        <IconButton icon={Save} label="Save settings" onClick={() => void handleSaveGeneralSettings()} tone="success">
           Save general settings
         </IconButton>
       </div>
@@ -269,10 +319,14 @@ function Label({ children }: { children: string }) {
   return <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-ink-400">{children}</span>;
 }
 
-function Check({ label }: { label: string }) {
+function Check({ checked, label, onChange }: { checked?: boolean; label: string; onChange?: (checked: boolean) => void }) {
+  const checkboxProps =
+    typeof checked === "boolean" && onChange
+      ? { checked, onChange: (event: ChangeEvent<HTMLInputElement>) => onChange(event.target.checked) }
+      : { defaultChecked: true };
   return (
     <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-white/10 bg-ink-950/70 px-3 shadow-surface">
-      <input className="h-4 w-4 rounded border-white/20 bg-ink-950 accent-signal-cyan" defaultChecked type="checkbox" />
+      <input className="h-4 w-4 rounded border-white/20 bg-ink-950 accent-signal-cyan" type="checkbox" {...checkboxProps} />
       <span>{label}</span>
     </label>
   );

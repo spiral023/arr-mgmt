@@ -8,17 +8,22 @@ import { mapConcurrent } from "./async/map-concurrent";
 import type { createRepositories } from "./db/repositories";
 import type { InstanceStore } from "./instances/instance-store";
 import type { JobContext, JobRunner } from "./scheduler/job-runner";
+import { QuotaService } from "./scheduler/quota-service";
+import { getAppSettings, updateAppSettings } from "./settings/app-settings";
 import type {
   ActivityRowView,
+  AppSettingsInput,
   InstanceConfigInput,
   InstanceKind,
   InstanceTestResult,
   JobEventView,
   JobView,
   LibrarySummary,
+  ManualGrabInput,
   QuotaSummary,
   RadarrActionResult,
   RadarrMovieActionInput,
+  SettingsViewModel,
   SonarrActionResult,
   SonarrSeriesActionInput,
 } from "../shared/ipc-contracts";
@@ -35,8 +40,6 @@ const RADARR_ANALYSIS_YIELD_EVERY = 5;
 const EPISODE_LOAD_CONCURRENCY = 8;
 const SEARCH_CONCURRENCY = 12;
 const GRAB_CONCURRENCY = 4;
-const SEARCH_LIMIT = 2_000;
-const GRAB_LIMIT = 400;
 
 export function registerIpcHandlers(state: IpcState): void {
   ipcMain.handle("jobs:list", (): JobView[] => state.jobRunner.listJobs());
@@ -103,14 +106,11 @@ export function registerIpcHandlers(state: IpcState): void {
   ipcMain.handle("library:radarr", () => state.repositories.mediaItems.listRadarrRows().map(formatRadarrRowDates));
   ipcMain.handle("stats:summary", () => state.repositories.stats.summary());
   ipcMain.handle("activity:recent", (): ActivityRowView[] => state.repositories.activityLog.listRecent(50).map(formatActivityRow));
-  ipcMain.handle("quota:summary", (): QuotaSummary => {
-    const now = new Date();
-    const searchUsed = state.repositories.activityLog.countSince("search", now, 24);
-    const grabUsed = state.repositories.activityLog.countSince("grab", now, 24);
-    return {
-      search: { used: searchUsed, remaining: Math.max(0, SEARCH_LIMIT - searchUsed), limit: SEARCH_LIMIT },
-      grab: { used: grabUsed, remaining: Math.max(0, GRAB_LIMIT - grabUsed), limit: GRAB_LIMIT },
-    };
+  ipcMain.handle("quota:summary", (): QuotaSummary => getQuotaSummary(state));
+  ipcMain.handle("quota:manualGrab", (_event, payload: unknown) => {
+    const input = assertManualGrabInput(payload);
+    createQuotaService(state).recordManualGrab(input.count, input.note);
+    return getQuotaSummary(state);
   });
   ipcMain.handle("sonarr:search", (_event, payload: unknown): SonarrActionResult => {
     const input = assertSeriesActionInput(payload);
@@ -178,7 +178,8 @@ export function registerIpcHandlers(state: IpcState): void {
     await shell.openExternal(`${config.baseUrl.replace(/\/+$/, "")}/movie/${movieId}`);
     return { ok: true };
   });
-  ipcMain.handle("settings:get", () => ({
+  ipcMain.handle("settings:get", (): SettingsViewModel => ({
+    appSettings: getAppSettings(state.repositories),
     instances: state.instanceStore.list(),
     onboardingCompleted: state.repositories.settings.get("onboarding.completed", false),
   }));
@@ -186,7 +187,7 @@ export function registerIpcHandlers(state: IpcState): void {
     state.repositories.settings.set("onboarding.completed", true);
     return { ok: true };
   });
-  ipcMain.handle("settings:update", (_event, payload: unknown) => payload);
+  ipcMain.handle("settings:update", (_event, payload: unknown) => updateAppSettings(state.repositories, assertSettingsInput(payload)));
   ipcMain.handle("instances:list", () => state.instanceStore.list());
   ipcMain.handle("instances:save", (_event, payload: unknown) => {
     const input = assertInstanceInput(payload);
@@ -393,6 +394,7 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
   const config = state.instanceStore.getWithApiKey("sonarr");
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
   const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  const quota = createQuotaService(state);
   const seriesEpisodes = await mapConcurrent(input.seriesIds, EPISODE_LOAD_CONCURRENCY, async (seriesId) => {
     context.throwIfCancelled();
     const mediaItemId = state.repositories.mediaItems.findIdByArrId("series", seriesId, instanceId);
@@ -406,8 +408,17 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
   context.addEvent("info", `Searching ${episodeTasks.length} non-FuN episodes with concurrency ${SEARCH_CONCURRENCY}`);
 
   await mapConcurrent(episodeTasks, SEARCH_CONCURRENCY, async (task) => {
+    context.throwIfCancelled();
+    const reservation = quota.reserve("search", {
+      childArrId: task.episodeId,
+      instanceId,
+      mediaItemId: task.mediaItemId,
+      message: `Search Sonarr episode ${task.episodeId}`,
+    });
+    if (!reservation.allowed) {
+      context.blockByBudget("Search budget exhausted before Sonarr episode search");
+    }
     try {
-      context.throwIfCancelled();
       const releases = await client.getReleasesForEpisode(task.episodeId);
       context.throwIfCancelled();
       const candidate = selectBestFunRelease(releases);
@@ -421,28 +432,10 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
         });
         candidatesFound += 1;
       }
-      state.repositories.activityLog.insert({
-        action: "search",
-        quotaType: "search",
-        status: "success",
-        instanceId,
-        mediaItemId: task.mediaItemId,
-        childArrId: task.episodeId,
-        message: candidate ? "FuN* candidate found" : "No FuN* candidate",
-        createdAt: new Date(),
-      });
+      quota.complete(reservation.activityId!, "success", candidate ? "FuN* candidate found" : "No FuN* candidate");
       context.incrementProgress();
     } catch (error) {
-      state.repositories.activityLog.insert({
-        action: "search",
-        quotaType: "search",
-        status: "failed",
-        instanceId,
-        mediaItemId: task.mediaItemId,
-        childArrId: task.episodeId,
-        message: error instanceof Error ? error.message : String(error),
-        createdAt: new Date(),
-      });
+      quota.complete(reservation.activityId!, "failed", error instanceof Error ? error.message : String(error));
       context.incrementProgress({ failed: true });
     }
   });
@@ -453,39 +446,31 @@ async function grabSonarrCandidates(state: IpcState, input: SonarrSeriesActionIn
   const config = state.instanceStore.getWithApiKey("sonarr");
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
   const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  const quota = createQuotaService(state);
   const candidates = state.repositories.releaseCandidates.listForSeriesIds(input.seriesIds);
 
   context.setProgressTotal(candidates.length);
   context.addEvent("info", `Grabbing ${candidates.length} stored FuN* candidates with concurrency ${GRAB_CONCURRENCY}`);
 
   await mapConcurrent(candidates, GRAB_CONCURRENCY, async (candidate) => {
+    context.throwIfCancelled();
+    const reservation = quota.reserve("grab", {
+      childArrId: candidate.childArrId,
+      instanceId,
+      mediaItemId: candidate.mediaItemId ?? undefined,
+      message: candidate.release.title ?? "Grab Sonarr FuN* candidate",
+    });
+    if (!reservation.allowed) {
+      context.blockByBudget("Grab budget exhausted before Sonarr grab");
+    }
     try {
-      context.throwIfCancelled();
       await client.grabRelease(candidate.release);
       context.throwIfCancelled();
       state.repositories.releaseCandidates.delete(candidate.id);
-      state.repositories.activityLog.insert({
-        action: "grab",
-        quotaType: "grab",
-        status: "success",
-        instanceId,
-        mediaItemId: candidate.mediaItemId,
-        childArrId: candidate.childArrId,
-        message: candidate.release.title ?? "FuN* candidate grabbed",
-        createdAt: new Date(),
-      });
+      quota.complete(reservation.activityId!, "success", candidate.release.title ?? "FuN* candidate grabbed");
       context.incrementProgress();
     } catch (error) {
-      state.repositories.activityLog.insert({
-        action: "grab",
-        quotaType: "grab",
-        status: "failed",
-        instanceId,
-        mediaItemId: candidate.mediaItemId,
-        childArrId: candidate.childArrId,
-        message: error instanceof Error ? error.message : String(error),
-        createdAt: new Date(),
-      });
+      quota.complete(reservation.activityId!, "failed", error instanceof Error ? error.message : String(error));
       context.incrementProgress({ failed: true });
     }
   });
@@ -495,6 +480,7 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
   const config = state.instanceStore.getWithApiKey("radarr");
   const instanceId = upsertRuntimeInstance(state, "radarr", config);
   const client = new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  const quota = createQuotaService(state);
   const movieSet = new Set(input.movieIds);
   const movies = (await client.getMovies()).filter((movie) => movieSet.has(movie.id));
   const movieTasks = getNonFunMovieIds(movies).map((movieId) => ({
@@ -507,8 +493,17 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
   context.addEvent("info", `Searching ${movieTasks.length} non-FuN Radarr movies with concurrency ${SEARCH_CONCURRENCY}`);
 
   await mapConcurrent(movieTasks, SEARCH_CONCURRENCY, async (task) => {
+    context.throwIfCancelled();
+    const reservation = quota.reserve("search", {
+      childArrId: task.movieId,
+      instanceId,
+      mediaItemId: task.mediaItemId,
+      message: `Search Radarr movie ${task.movieId}`,
+    });
+    if (!reservation.allowed) {
+      context.blockByBudget("Search budget exhausted before Radarr movie search");
+    }
     try {
-      context.throwIfCancelled();
       const releases = await client.getReleasesForMovie(task.movieId);
       context.throwIfCancelled();
       const candidate = selectBestFunRelease(releases);
@@ -522,28 +517,10 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
         });
         candidatesFound += 1;
       }
-      state.repositories.activityLog.insert({
-        action: "search",
-        quotaType: "search",
-        status: "success",
-        instanceId,
-        mediaItemId: task.mediaItemId,
-        childArrId: task.movieId,
-        message: candidate ? "FuN* movie candidate found" : "No FuN* movie candidate",
-        createdAt: new Date(),
-      });
+      quota.complete(reservation.activityId!, "success", candidate ? "FuN* movie candidate found" : "No FuN* movie candidate");
       context.incrementProgress();
     } catch (error) {
-      state.repositories.activityLog.insert({
-        action: "search",
-        quotaType: "search",
-        status: "failed",
-        instanceId,
-        mediaItemId: task.mediaItemId,
-        childArrId: task.movieId,
-        message: error instanceof Error ? error.message : String(error),
-        createdAt: new Date(),
-      });
+      quota.complete(reservation.activityId!, "failed", error instanceof Error ? error.message : String(error));
       context.incrementProgress({ failed: true });
     }
   });
@@ -554,41 +531,62 @@ async function grabRadarrCandidates(state: IpcState, input: RadarrMovieActionInp
   const config = state.instanceStore.getWithApiKey("radarr");
   const instanceId = upsertRuntimeInstance(state, "radarr", config);
   const client = new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  const quota = createQuotaService(state);
   const candidates = state.repositories.releaseCandidates.listForMovieIds(input.movieIds);
 
   context.setProgressTotal(candidates.length);
   context.addEvent("info", `Grabbing ${candidates.length} stored Radarr FuN* candidates with concurrency ${GRAB_CONCURRENCY}`);
 
   await mapConcurrent(candidates, GRAB_CONCURRENCY, async (candidate) => {
+    context.throwIfCancelled();
+    const reservation = quota.reserve("grab", {
+      childArrId: candidate.childArrId,
+      instanceId,
+      mediaItemId: candidate.mediaItemId ?? undefined,
+      message: candidate.release.title ?? "Grab Radarr FuN* candidate",
+    });
+    if (!reservation.allowed) {
+      context.blockByBudget("Grab budget exhausted before Radarr grab");
+    }
     try {
-      context.throwIfCancelled();
       await client.grabRelease(candidate.release);
       context.throwIfCancelled();
       state.repositories.releaseCandidates.delete(candidate.id);
-      state.repositories.activityLog.insert({
-        action: "grab",
-        quotaType: "grab",
-        status: "success",
-        instanceId,
-        mediaItemId: candidate.mediaItemId,
-        childArrId: candidate.childArrId,
-        message: candidate.release.title ?? "Radarr FuN* candidate grabbed",
-        createdAt: new Date(),
-      });
+      quota.complete(reservation.activityId!, "success", candidate.release.title ?? "Radarr FuN* candidate grabbed");
       context.incrementProgress();
     } catch (error) {
-      state.repositories.activityLog.insert({
-        action: "grab",
-        quotaType: "grab",
-        status: "failed",
-        instanceId,
-        mediaItemId: candidate.mediaItemId,
-        childArrId: candidate.childArrId,
-        message: error instanceof Error ? error.message : String(error),
-        createdAt: new Date(),
-      });
+      quota.complete(reservation.activityId!, "failed", error instanceof Error ? error.message : String(error));
       context.incrementProgress({ failed: true });
     }
+  });
+}
+
+function getQuotaSummary(state: IpcState): QuotaSummary {
+  const settings = getAppSettings(state.repositories);
+  const now = new Date();
+  const searchUsed = state.repositories.activityLog.countSince("search", now, settings.quota.windowHours);
+  const grabUsed = state.repositories.activityLog.countSince("grab", now, settings.quota.windowHours);
+  return {
+    search: {
+      used: searchUsed,
+      remaining: Math.max(0, settings.quota.searchLimit - searchUsed),
+      limit: settings.quota.searchLimit,
+    },
+    grab: {
+      used: grabUsed,
+      remaining: Math.max(0, settings.quota.grabLimit - grabUsed),
+      limit: settings.quota.grabLimit,
+    },
+  };
+}
+
+function createQuotaService(state: IpcState): QuotaService {
+  const settings = getAppSettings(state.repositories);
+  return new QuotaService(state.repositories, {
+    searchLimit: settings.quota.searchLimit,
+    grabLimit: settings.quota.grabLimit,
+    windowHours: settings.quota.windowHours,
+    now: () => new Date(),
   });
 }
 
@@ -650,6 +648,28 @@ function assertMovieActionInput(payload: unknown): RadarrMovieActionInput {
   }
   return {
     movieIds: value.movieIds.filter((id): id is number => Number.isInteger(id) && id > 0),
+  };
+}
+
+function assertSettingsInput(payload: unknown): AppSettingsInput {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Invalid settings payload");
+  }
+  return payload as AppSettingsInput;
+}
+
+function assertManualGrabInput(payload: unknown): ManualGrabInput {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Invalid manual grab payload");
+  }
+  const value = payload as Partial<ManualGrabInput>;
+  const count = Number(value.count);
+  if (!Number.isInteger(count) || count <= 0) {
+    throw new Error("Manual grab count must be a positive integer");
+  }
+  return {
+    count,
+    note: typeof value.note === "string" && value.note.trim() ? value.note.trim() : "Manual grab entry",
   };
 }
 

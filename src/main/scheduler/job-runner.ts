@@ -37,6 +37,7 @@ export type JobContext = {
   isCancelled: () => boolean;
   setProgress: (current: number, total?: number) => void;
   setProgressTotal: (total: number) => void;
+  blockByBudget: (message: string) => never;
   throwIfCancelled: () => void;
 };
 
@@ -180,6 +181,15 @@ export class JobRunner {
         job.progressTotal = total;
         this.persistAndEmitJob(job);
       },
+      blockByBudget: (message) => {
+        if (job.status !== "cancelled") {
+          job.status = "blocked_by_budget";
+          job.finishedAt = new Date().toISOString();
+          this.addEvent(job, "warning", message);
+          this.persistAndEmitJob(job);
+        }
+        throw new JobBlockedByBudgetError(message);
+      },
       throwIfCancelled: () => {
         if (job.status === "cancelled") {
           throw new JobCancelledError();
@@ -197,13 +207,15 @@ export class JobRunner {
           context.incrementProgress();
         }
       }
-      if ((job.status as JobStatus) !== "cancelled") {
+      if ((job.status as JobStatus) !== "cancelled" && (job.status as JobStatus) !== "blocked_by_budget") {
         job.status = "completed";
         this.addEvent(job, "info", `${job.name} completed`);
         this.notifications.show({ title: "ARR Ops job completed", body: job.name });
       }
     } catch (error) {
-      if (error instanceof JobCancelledError || (job.status as JobStatus) === "cancelled") {
+      if (error instanceof JobBlockedByBudgetError || (job.status as JobStatus) === "blocked_by_budget") {
+        job.status = "blocked_by_budget";
+      } else if (error instanceof JobCancelledError || (job.status as JobStatus) === "cancelled") {
         job.status = "cancelled";
       } else {
         job.status = "failed";
@@ -245,6 +257,12 @@ export class JobRunner {
 class JobCancelledError extends Error {
   constructor() {
     super("Job cancelled");
+  }
+}
+
+class JobBlockedByBudgetError extends Error {
+  constructor(message: string) {
+    super(message);
   }
 }
 

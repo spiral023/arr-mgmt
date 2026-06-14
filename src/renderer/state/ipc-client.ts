@@ -1,5 +1,6 @@
 import type {
   ActivityRowView,
+  AppSettingsInput,
   InstanceConfigInput,
   InstanceConfigView,
   InstanceTestResult,
@@ -7,6 +8,7 @@ import type {
   JobEventView,
   JobView,
   LibrarySummary,
+  ManualGrabInput,
   QuotaSummary,
   RadarrActionResult,
   RadarrMovieActionInput,
@@ -14,6 +16,7 @@ import type {
   SonarrActionResult,
   SonarrSeriesTableRow,
   SonarrSeriesActionInput,
+  SettingsViewModel,
   StatsSummary,
 } from "../../shared/ipc-contracts";
 
@@ -96,6 +99,10 @@ export function getQuotaSummary(): Promise<QuotaSummary> {
   return invokeIpc<QuotaSummary>("quota:summary");
 }
 
+export function recordManualGrab(input: ManualGrabInput): Promise<QuotaSummary> {
+  return invokeIpc<QuotaSummary>("quota:manualGrab", input);
+}
+
 export function getRecentActivity(): Promise<ActivityRowView[]> {
   return invokeIpc<ActivityRowView[]>("activity:recent");
 }
@@ -128,8 +135,12 @@ export function openRadarrMovie(movieId: number): Promise<{ ok: boolean }> {
   return invokeIpc<{ ok: boolean }>("radarr:openMovie", { movieId });
 }
 
-export function getSettings(): Promise<{ instances: InstanceConfigView[]; onboardingCompleted: boolean }> {
-  return invokeIpc("settings:get");
+export function getSettings(): Promise<SettingsViewModel> {
+  return invokeIpc<SettingsViewModel>("settings:get");
+}
+
+export function updateAppSettings(input: AppSettingsInput): Promise<SettingsViewModel["appSettings"]> {
+  return invokeIpc<SettingsViewModel["appSettings"]>("settings:update", input);
 }
 
 export function completeOnboarding(): Promise<{ ok: boolean }> {
@@ -152,6 +163,13 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
   }
   if (channel === "settings:get") {
     return {
+      appSettings: {
+        cooldownHours: { episodeSearch: 24, movieSearch: 24 },
+        fun: { displayName: "FuN*", prefixes: ["fun"] },
+        notifications: { candidatesFound: true, jobFinished: true, quotaExhausted: true },
+        quota: { searchLimit: 2000, grabLimit: 400, windowHours: 24 },
+        tray: { keepRunningOnClose: true, showControls: true },
+      },
       instances: [
         { kind: "sonarr", name: "Sonarr", baseUrl: "http://192.168.0.170:8989", enabled: true, hasApiKey: false },
         { kind: "radarr", name: "Radarr", baseUrl: "http://192.168.0.170:7878", enabled: true, hasApiKey: false },
@@ -234,6 +252,12 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
     return {
       search: { used: 0, remaining: 2000, limit: 2000 },
       grab: { used: 0, remaining: 400, limit: 400 },
+    } as T;
+  }
+  if (channel === "quota:manualGrab") {
+    return {
+      search: { used: 0, remaining: 2000, limit: 2000 },
+      grab: { used: 1, remaining: 399, limit: 400 },
     } as T;
   }
   return {} as T;
