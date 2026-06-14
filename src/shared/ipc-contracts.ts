@@ -1,6 +1,13 @@
+import type { ScheduleAction, ScheduleIntervalKind } from "./domain";
+
+export type { ScheduleAction, ScheduleIntervalKind };
+
 export type IpcChannel =
   | "settings:get"
   | "settings:update"
+  | "schedules:list"
+  | "schedules:save"
+  | "schedules:delete"
   | "instances:list"
   | "instances:save"
   | "instances:test"
@@ -207,6 +214,29 @@ export type SettingsViewModel = {
 export type ManualGrabInput = {
   count: number;
   note: string;
+};
+
+export type ScheduleTargetScope = "all" | "sonarr" | "radarr";
+
+export type ScheduleInput = {
+  id?: number;
+  name: string;
+  enabled: boolean;
+  actions: ScheduleAction[];
+  targetScope: ScheduleTargetScope;
+  intervalKind: ScheduleIntervalKind;
+  intervalValue?: number;
+  timeOfDay?: string;
+};
+
+export type ScheduleView = ScheduleInput & {
+  id: number;
+  nextRunAt: string;
+  lastRunAt?: string;
+};
+
+export type ScheduleDeleteInput = {
+  id: number;
 };
 
 export type ActivityRowView = {

@@ -2,7 +2,16 @@ import type { AppDatabase } from "./client";
 import type { ActivityInsert, ActivityStatus, QuotaType } from "./schema";
 import type { ArrRelease, MediaItemAnalysis } from "../arr/arr-types";
 import type { Job, JobEvent } from "../scheduler/job-runner";
-import type { InstanceKind, LibrarySummary, RadarrMovieTableRow, SonarrSeriesTableRow, StatsSummary } from "../../shared/ipc-contracts";
+import { calculateNextRunAt } from "../../shared/schedule";
+import type {
+  InstanceKind,
+  LibrarySummary,
+  RadarrMovieTableRow,
+  ScheduleInput,
+  ScheduleView,
+  SonarrSeriesTableRow,
+  StatsSummary,
+} from "../../shared/ipc-contracts";
 
 function toIso(date: Date): string {
   return date.toISOString();
@@ -637,6 +646,30 @@ export function createRepositories(db: AppDatabase) {
         return row.count;
       },
 
+      hasRecentChildActivity(input: {
+        action: "search" | "grab";
+        childArrId: number;
+        instanceId: number;
+        now: Date;
+        windowHours: number;
+      }): boolean {
+        const since = new Date(input.now.getTime() - input.windowHours * 60 * 60 * 1000).toISOString();
+        const row = db
+          .prepare(
+            `select 1 as found
+             from activity_log
+             where action = ?
+               and instance_id = ?
+               and child_arr_id = ?
+               and created_at >= ?
+               and created_at <= ?
+               and status in ('success', 'failed', 'started')
+             limit 1`,
+          )
+          .get(input.action, input.instanceId, input.childArrId, since, toIso(input.now)) as { found: 1 } | undefined;
+        return Boolean(row);
+      },
+
       listRecent(limit = 50): Array<{
         action: string;
         app: string;
@@ -668,6 +701,135 @@ export function createRepositories(db: AppDatabase) {
           quota: string;
           status: string;
         }>;
+      },
+    },
+
+    schedules: {
+      upsert(input: ScheduleInput & { now: Date }): ScheduleView {
+        const now = toIso(input.now);
+        const nextRunAt = calculateNextRunAt(
+          {
+            intervalKind: input.intervalKind,
+            intervalValue: input.intervalValue,
+            timeOfDay: input.timeOfDay,
+          },
+          input.now,
+        ).toISOString();
+
+        if (input.id) {
+          db.prepare(
+            `update schedules
+             set name = ?,
+                 enabled = ?,
+                 actions_json = ?,
+                 target_scope = ?,
+                 interval_kind = ?,
+                 interval_value = ?,
+                 time_of_day = ?,
+                 next_run_at = ?,
+                 updated_at = ?
+             where id = ?`,
+          ).run(
+            input.name,
+            input.enabled ? 1 : 0,
+            JSON.stringify(input.actions),
+            input.targetScope,
+            input.intervalKind,
+            input.intervalValue ?? null,
+            input.timeOfDay ?? null,
+            nextRunAt,
+            now,
+            input.id,
+          );
+        } else {
+          db.prepare(
+            `insert into schedules (
+               name,
+               enabled,
+               actions_json,
+               target_scope,
+               interval_kind,
+               interval_value,
+               time_of_day,
+               next_run_at,
+               created_at,
+               updated_at
+             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            input.name,
+            input.enabled ? 1 : 0,
+            JSON.stringify(input.actions),
+            input.targetScope,
+            input.intervalKind,
+            input.intervalValue ?? null,
+            input.timeOfDay ?? null,
+            nextRunAt,
+            now,
+            now,
+          );
+        }
+
+        const id =
+          input.id ??
+          (db.prepare("select last_insert_rowid() as id").get() as {
+            id: number;
+          }).id;
+        return this.find(id)!;
+      },
+
+      list(): ScheduleView[] {
+        const rows = db
+          .prepare(
+            `select
+               id,
+               name,
+               enabled,
+               actions_json as actionsJson,
+               target_scope as targetScope,
+               interval_kind as intervalKind,
+               interval_value as intervalValue,
+               time_of_day as timeOfDay,
+               next_run_at as nextRunAt,
+               last_run_at as lastRunAt
+             from schedules
+             order by name collate nocase`,
+          )
+          .all() as ScheduleRow[];
+        return rows.map(formatScheduleRow);
+      },
+
+      find(id: number): ScheduleView | undefined {
+        const row = db
+          .prepare(
+            `select
+               id,
+               name,
+               enabled,
+               actions_json as actionsJson,
+               target_scope as targetScope,
+               interval_kind as intervalKind,
+               interval_value as intervalValue,
+               time_of_day as timeOfDay,
+               next_run_at as nextRunAt,
+               last_run_at as lastRunAt
+             from schedules
+             where id = ?`,
+          )
+          .get(id) as ScheduleRow | undefined;
+        return row ? formatScheduleRow(row) : undefined;
+      },
+
+      markRun(id: number, lastRunAt: Date, nextRunAt: Date): void {
+        db.prepare("update schedules set last_run_at = ?, next_run_at = ?, updated_at = ? where id = ?").run(
+          toIso(lastRunAt),
+          toIso(nextRunAt),
+          toIso(lastRunAt),
+          id,
+        );
+      },
+
+      delete(id: number): void {
+        db.prepare("delete from schedules where id = ?").run(id);
       },
     },
 
@@ -816,6 +978,34 @@ export function createRepositories(db: AppDatabase) {
 
 function booleanToNullableInt(value: boolean | undefined): 0 | 1 | null {
   return typeof value === "boolean" ? (value ? 1 : 0) : null;
+}
+
+type ScheduleRow = {
+  id: number;
+  name: string;
+  enabled: 0 | 1;
+  actionsJson: string;
+  targetScope: ScheduleView["targetScope"];
+  intervalKind: ScheduleView["intervalKind"];
+  intervalValue: number | null;
+  timeOfDay: string | null;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+};
+
+function formatScheduleRow(row: ScheduleRow): ScheduleView {
+  return {
+    id: row.id,
+    name: row.name,
+    enabled: Boolean(row.enabled),
+    actions: JSON.parse(row.actionsJson) as ScheduleView["actions"],
+    targetScope: row.targetScope,
+    intervalKind: row.intervalKind,
+    intervalValue: row.intervalValue ?? undefined,
+    timeOfDay: row.timeOfDay ?? undefined,
+    nextRunAt: row.nextRunAt ?? "",
+    lastRunAt: row.lastRunAt ?? undefined,
+  };
 }
 
 function toDateKey(date: Date): string {

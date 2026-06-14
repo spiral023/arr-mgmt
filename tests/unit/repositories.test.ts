@@ -184,6 +184,101 @@ describe("repositories", () => {
       }),
     );
   });
+
+  it("finds recent child activity for cooldown checks", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+    const instanceId = repos.instances.upsert({
+      kind: "sonarr",
+      name: "Sonarr",
+      baseUrl: "http://sonarr.local:8989",
+      apiKeyEncrypted: "encrypted",
+      enabled: true,
+      now: new Date("2026-06-13T20:00:00.000Z"),
+    });
+    const mediaItemId = repos.mediaItems.upsertAnalysis(instanceId, analysis());
+
+    repos.activityLog.insert({
+      action: "search",
+      quotaType: "search",
+      status: "success",
+      instanceId,
+      mediaItemId,
+      childArrId: 101,
+      createdAt: new Date("2026-06-13T19:00:00.000Z"),
+    });
+
+    expect(
+      repos.activityLog.hasRecentChildActivity({
+        action: "search",
+        childArrId: 101,
+        instanceId,
+        now: new Date("2026-06-13T20:00:00.000Z"),
+        windowHours: 24,
+      }),
+    ).toBe(true);
+    expect(
+      repos.activityLog.hasRecentChildActivity({
+        action: "search",
+        childArrId: 102,
+        instanceId,
+        now: new Date("2026-06-13T20:00:00.000Z"),
+        windowHours: 24,
+      }),
+    ).toBe(false);
+  });
+
+  it("upserts and lists persisted schedules", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+
+    const schedule = repos.schedules.upsert({
+      actions: ["analysis", "search"],
+      enabled: true,
+      intervalKind: "daily_time",
+      name: "Nightly",
+      targetScope: "sonarr",
+      timeOfDay: "03:30",
+      now: new Date("2026-06-13T20:00:00.000Z"),
+    });
+
+    expect(schedule).toEqual(
+      expect.objectContaining({
+        actions: ["analysis", "search"],
+        enabled: true,
+        intervalKind: "daily_time",
+        name: "Nightly",
+        targetScope: "sonarr",
+        timeOfDay: "03:30",
+      }),
+    );
+
+    const updated = repos.schedules.upsert({
+      id: schedule.id,
+      actions: ["analysis"],
+      enabled: false,
+      intervalKind: "hours",
+      intervalValue: 6,
+      name: "Every six hours",
+      targetScope: "all",
+      now: new Date("2026-06-13T21:00:00.000Z"),
+    });
+
+    expect(repos.schedules.list()).toEqual([
+      expect.objectContaining({
+        id: schedule.id,
+        actions: ["analysis"],
+        enabled: false,
+        intervalKind: "hours",
+        intervalValue: 6,
+        name: "Every six hours",
+        nextRunAt: updated.nextRunAt,
+        targetScope: "all",
+      }),
+    ]);
+  });
 });
 
 function analysis(): MediaItemAnalysis {

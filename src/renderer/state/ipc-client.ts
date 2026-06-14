@@ -13,6 +13,9 @@ import type {
   RadarrActionResult,
   RadarrMovieActionInput,
   RadarrMovieTableRow,
+  ScheduleDeleteInput,
+  ScheduleInput,
+  ScheduleView,
   SonarrActionResult,
   SonarrSeriesTableRow,
   SonarrSeriesActionInput,
@@ -143,6 +146,18 @@ export function updateAppSettings(input: AppSettingsInput): Promise<SettingsView
   return invokeIpc<SettingsViewModel["appSettings"]>("settings:update", input);
 }
 
+export function listSchedules(): Promise<ScheduleView[]> {
+  return invokeIpc<ScheduleView[]>("schedules:list");
+}
+
+export function saveSchedule(input: ScheduleInput): Promise<ScheduleView> {
+  return invokeIpc<ScheduleView>("schedules:save", input);
+}
+
+export function deleteSchedule(input: ScheduleDeleteInput): Promise<{ ok: boolean }> {
+  return invokeIpc<{ ok: boolean }>("schedules:delete", input);
+}
+
 export function completeOnboarding(): Promise<{ ok: boolean }> {
   return invokeIpc("onboarding:complete");
 }
@@ -176,6 +191,24 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
       ],
       onboardingCompleted: true,
     } as T;
+  }
+  if (channel === "schedules:list") {
+    return [] as T;
+  }
+  if (channel === "schedules:save") {
+    return {
+      id: 1,
+      name: "Nightly FuN completion",
+      enabled: true,
+      actions: ["analysis", "search"],
+      targetScope: "all",
+      intervalKind: "daily_time",
+      timeOfDay: "03:30",
+      nextRunAt: new Date().toISOString(),
+    } as T;
+  }
+  if (channel === "schedules:delete") {
+    return { ok: true } as T;
   }
   if (channel === "instances:test") {
     return { ok: false, message: "IPC is only available in the Electron app." } as T;

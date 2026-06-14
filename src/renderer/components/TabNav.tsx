@@ -28,7 +28,7 @@ export interface TabNavProps {
 
 export function TabNav({ activeTab, onTabChange, tabs = APP_TABS }: TabNavProps) {
   return (
-    <nav aria-label="Primary" className="flex gap-1 overflow-x-auto border-t border-white/10 px-3 py-2">
+    <nav aria-label="Primary" className="flex gap-1 overflow-x-auto px-3 pb-3">
       {tabs.map((tab) => {
         const Icon = tab.icon;
         const isActive = tab.id === activeTab;
@@ -37,12 +37,12 @@ export function TabNav({ activeTab, onTabChange, tabs = APP_TABS }: TabNavProps)
           <button
             aria-current={isActive ? "page" : undefined}
             className={clsx(
-              "inline-flex min-h-10 items-center gap-2 rounded-md border px-3 text-sm font-semibold outline-none",
-              "transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.96]",
+              "inline-flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm font-semibold outline-none",
+              "transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.96]",
               "focus-visible:border-signal-cyan focus-visible:ring-2 focus-visible:ring-signal-cyan/30",
               isActive
-                ? "border-signal-cyan/30 bg-signal-cyan/[0.12] text-white shadow-surface"
-                : "border-transparent text-ink-400 hover:border-white/10 hover:bg-white/[0.05] hover:text-ink-200",
+                ? "bg-signal-cyan/[0.12] text-white shadow-[0_0_0_1px_rgba(94,200,216,0.30),inset_0_-2px_0_rgba(94,200,216,0.72)]"
+                : "text-ink-400 hover:bg-white/[0.05] hover:text-ink-200 hover:shadow-[0_0_0_1px_rgba(255,255,255,0.08)]",
             )}
             key={tab.id}
             onClick={() => onTabChange(tab.id)}

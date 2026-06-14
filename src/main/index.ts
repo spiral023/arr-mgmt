@@ -5,7 +5,7 @@ import { createAppDatabase } from "./db/client";
 import { migrateDatabase } from "./db/migrations";
 import { createRepositories } from "./db/repositories";
 import { InstanceStore } from "./instances/instance-store";
-import { registerIpcHandlers } from "./ipc";
+import { registerIpcHandlers, registerPersistedSchedules } from "./ipc";
 import { createNotificationAdapter } from "./notifications";
 import { JobRunner } from "./scheduler/job-runner";
 import { Scheduler } from "./scheduler/scheduler";
@@ -30,7 +30,9 @@ app.whenReady().then(() => {
     createSecretStore(safeStorage),
   );
 
-  registerIpcHandlers({ instanceStore, jobRunner, repositories });
+  const ipcState = { instanceStore, jobRunner, repositories, scheduler };
+  registerIpcHandlers(ipcState);
+  registerPersistedSchedules(ipcState);
   createTray(window, {
     runAnalysis: () => {
       jobRunner.enqueue({ name: "Manual analysis", kind: "analysis", steps: [async () => undefined] });

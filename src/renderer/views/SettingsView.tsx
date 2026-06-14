@@ -1,10 +1,10 @@
-import { Bell, Clock3, Database, KeyRound, Save, Shield, Timer, Wifi } from "lucide-react";
+import { Bell, Clock3, Database, KeyRound, Save, Shield, Timer, Trash2, Wifi } from "lucide-react";
 import type { ChangeEvent } from "react";
 import { useEffect, useState } from "react";
 import { IconButton } from "../components/IconButton";
 import { StatusPill } from "../components/StatusPill";
-import { getSettings, listInstances, saveInstance, testInstance, updateAppSettings } from "../state/ipc-client";
-import type { InstanceConfigInput, InstanceConfigView, InstanceKind } from "../../shared/ipc-contracts";
+import { deleteSchedule, getSettings, listInstances, listSchedules, saveInstance, saveSchedule, testInstance, updateAppSettings } from "../state/ipc-client";
+import type { InstanceConfigInput, InstanceConfigView, InstanceKind, ScheduleAction, ScheduleIntervalKind, ScheduleTargetScope, ScheduleView } from "../../shared/ipc-contracts";
 
 const fieldClassName =
   "h-10 w-full rounded-md border border-white/10 bg-ink-950 px-3 text-sm text-ink-200 outline-none shadow-surface transition-[background-color,border-color,box-shadow] duration-150 ease-out placeholder:text-ink-400 focus:border-signal-cyan focus:ring-2 focus:ring-signal-cyan/30";
@@ -25,6 +25,15 @@ export function SettingsView() {
   const [quotaExhaustedNotifications, setQuotaExhaustedNotifications] = useState(true);
   const [searchLimit, setSearchLimit] = useState(2000);
   const [showTrayControls, setShowTrayControls] = useState(true);
+  const [scheduleActions, setScheduleActions] = useState<ScheduleAction[]>(["analysis", "search"]);
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
+  const [scheduleId, setScheduleId] = useState<number | undefined>();
+  const [scheduleIntervalKind, setScheduleIntervalKind] = useState<ScheduleIntervalKind>("daily_time");
+  const [scheduleIntervalValue, setScheduleIntervalValue] = useState(6);
+  const [scheduleName, setScheduleName] = useState("Nightly FuN completion");
+  const [schedules, setSchedules] = useState<ScheduleView[]>([]);
+  const [scheduleTarget, setScheduleTarget] = useState<ScheduleTargetScope>("all");
+  const [scheduleTimeOfDay, setScheduleTimeOfDay] = useState("03:30");
 
   useEffect(() => {
     void getSettings().then((settings) => {
@@ -41,6 +50,7 @@ export function SettingsView() {
       setSearchLimit(settings.appSettings.quota.searchLimit);
       setShowTrayControls(settings.appSettings.tray.showControls);
     });
+    void listSchedules().then(setSchedules);
   }, []);
 
   async function handleSave(input: InstanceConfigInput) {
@@ -83,6 +93,56 @@ export function SettingsView() {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
+  }
+
+  async function handleSaveSchedule() {
+    setMessage("Saving schedule...");
+    try {
+      const saved = await saveSchedule({
+        id: scheduleId,
+        name: scheduleName,
+        enabled: scheduleEnabled,
+        actions: scheduleActions,
+        targetScope: scheduleTarget,
+        intervalKind: scheduleIntervalKind,
+        intervalValue: scheduleIntervalKind === "daily_time" ? undefined : scheduleIntervalValue,
+        timeOfDay: scheduleIntervalKind === "daily_time" ? scheduleTimeOfDay : undefined,
+      });
+      setScheduleId(saved.id);
+      setSchedules(await listSchedules());
+      setMessage(`Schedule saved: ${saved.name}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleDeleteSchedule(id: number) {
+    setMessage("Deleting schedule...");
+    await deleteSchedule({ id });
+    setSchedules(await listSchedules());
+    if (scheduleId === id) {
+      setScheduleId(undefined);
+    }
+    setMessage("Schedule deleted");
+  }
+
+  function editSchedule(schedule: ScheduleView) {
+    setScheduleId(schedule.id);
+    setScheduleName(schedule.name);
+    setScheduleEnabled(schedule.enabled);
+    setScheduleActions(schedule.actions);
+    setScheduleTarget(schedule.targetScope);
+    setScheduleIntervalKind(schedule.intervalKind);
+    setScheduleIntervalValue(schedule.intervalValue ?? 6);
+    setScheduleTimeOfDay(schedule.timeOfDay ?? "03:30");
+    setMessage(`Editing schedule: ${schedule.name}`);
+  }
+
+  function toggleScheduleAction(action: ScheduleAction, checked: boolean) {
+    setScheduleActions((current) => {
+      const next = checked ? [...new Set([...current, action])] : current.filter((item) => item !== action);
+      return next.length > 0 ? next : current;
+    });
   }
 
   const sonarr = instances.find((instance) => instance.kind === "sonarr");
@@ -178,11 +238,11 @@ export function SettingsView() {
         <div className="mt-4 grid gap-3 md:grid-cols-[1fr_11rem_10rem]">
           <label>
             <Label>Name</Label>
-            <input className={fieldClassName} defaultValue="Nightly FuN completion" />
+            <input className={fieldClassName} onChange={(event) => setScheduleName(event.target.value)} value={scheduleName} />
           </label>
           <label>
             <Label>Interval</Label>
-            <select className={fieldClassName} defaultValue="daily_time">
+            <select className={fieldClassName} onChange={(event) => setScheduleIntervalKind(event.target.value as ScheduleIntervalKind)} value={scheduleIntervalKind}>
               <option value="minutes">Every X minutes</option>
               <option value="hours">Every X hours</option>
               <option value="days">Every X days</option>
@@ -191,15 +251,51 @@ export function SettingsView() {
           </label>
           <label>
             <Label>Time / value</Label>
-            <input className={fieldClassName} defaultValue="03:30" />
+            <input
+              className={fieldClassName}
+              min={1}
+              onChange={(event) => (scheduleIntervalKind === "daily_time" ? setScheduleTimeOfDay(event.target.value) : setScheduleIntervalValue(Number(event.target.value)))}
+              type={scheduleIntervalKind === "daily_time" ? "time" : "number"}
+              value={scheduleIntervalKind === "daily_time" ? scheduleTimeOfDay : scheduleIntervalValue}
+            />
+          </label>
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-[10rem_10rem]">
+          <label>
+            <Label>Target</Label>
+            <select className={fieldClassName} onChange={(event) => setScheduleTarget(event.target.value as ScheduleTargetScope)} value={scheduleTarget}>
+              <option value="all">Sonarr + Radarr</option>
+              <option value="sonarr">Sonarr</option>
+              <option value="radarr">Radarr</option>
+            </select>
+          </label>
+          <label className="inline-flex min-h-10 items-end gap-2 pb-1 text-sm text-ink-200">
+            <input className="h-4 w-4 rounded border-white/20 bg-ink-950 accent-signal-cyan" checked={scheduleEnabled} onChange={(event) => setScheduleEnabled(event.target.checked)} type="checkbox" />
+            Enabled
           </label>
         </div>
         <div className="mt-4 flex flex-wrap gap-3 text-sm text-ink-200">
-          <Check label="Analysis" />
-          <Check label="Search" />
-          <Check label="Grab" />
-          <Check label="Sonarr" />
-          <Check label="Radarr" />
+          <Check checked={scheduleActions.includes("analysis")} label="Analysis" onChange={(checked) => toggleScheduleAction("analysis", checked)} />
+          <Check checked={scheduleActions.includes("search")} label="Search" onChange={(checked) => toggleScheduleAction("search", checked)} />
+          <Check checked={scheduleActions.includes("grab")} label="Grab" onChange={(checked) => toggleScheduleAction("grab", checked)} />
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <IconButton icon={Save} label="Save schedule" onClick={() => void handleSaveSchedule()} tone="success">
+            {scheduleId ? "Update schedule" : "Save schedule"}
+          </IconButton>
+        </div>
+        <div className="mt-4 grid gap-2">
+          {schedules.map((schedule) => (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-ink-950/70 px-3 py-2 shadow-surface" key={schedule.id}>
+              <button className="min-w-0 text-left" onClick={() => editSchedule(schedule)} type="button">
+                <div className="truncate text-sm font-semibold text-white">{schedule.name}</div>
+                <div className="truncate text-xs text-ink-400">
+                  {schedule.enabled ? "enabled" : "disabled"} · {schedule.targetScope} · {schedule.actions.join(", ")} · next {formatDate(schedule.nextRunAt)}
+                </div>
+              </button>
+              <IconButton icon={Trash2} label={`Delete ${schedule.name}`} onClick={() => void handleDeleteSchedule(schedule.id)} tone="danger" />
+            </div>
+          ))}
         </div>
       </section>
 
@@ -330,4 +426,8 @@ function Check({ checked, label, onChange }: { checked?: boolean; label: string;
       <span>{label}</span>
     </label>
   );
+}
+
+function formatDate(value: string) {
+  return value ? new Date(value).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "-";
 }

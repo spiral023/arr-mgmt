@@ -15,9 +15,13 @@ export class Scheduler {
   private paused = false;
 
   add(input: Omit<ScheduledJob, "id" | "nextRunAt">, now = new Date()): ScheduledJob {
+    return this.upsert(input, now);
+  }
+
+  upsert(input: Omit<ScheduledJob, "id" | "nextRunAt"> & { id?: string }, now = new Date()): ScheduledJob {
     const job: ScheduledJob = {
       ...input,
-      id: crypto.randomUUID(),
+      id: input.id ?? crypto.randomUUID(),
       nextRunAt: calculateNextRunAt(input.rule, now),
     };
     this.jobs.set(job.id, job);
@@ -31,6 +35,13 @@ export class Scheduler {
 
   list(): ScheduledJob[] {
     return [...this.jobs.values()];
+  }
+
+  remove(id: string): void {
+    this.jobs.delete(id);
+    if (this.jobs.size === 0) {
+      this.stop();
+    }
   }
 
   stop(): void {

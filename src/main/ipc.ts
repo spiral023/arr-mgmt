@@ -9,7 +9,9 @@ import type { createRepositories } from "./db/repositories";
 import type { InstanceStore } from "./instances/instance-store";
 import type { JobContext, JobRunner } from "./scheduler/job-runner";
 import { QuotaService } from "./scheduler/quota-service";
+import type { Scheduler } from "./scheduler/scheduler";
 import { getAppSettings, updateAppSettings } from "./settings/app-settings";
+import { calculateNextRunAt } from "../shared/schedule";
 import type {
   ActivityRowView,
   AppSettingsInput,
@@ -23,6 +25,9 @@ import type {
   QuotaSummary,
   RadarrActionResult,
   RadarrMovieActionInput,
+  ScheduleDeleteInput,
+  ScheduleInput,
+  ScheduleView,
   SettingsViewModel,
   SonarrActionResult,
   SonarrSeriesActionInput,
@@ -32,6 +37,7 @@ export type IpcState = {
   instanceStore: InstanceStore;
   jobRunner: JobRunner;
   repositories: ReturnType<typeof createRepositories>;
+  scheduler: Scheduler;
 };
 
 const ANALYSIS_CONCURRENCY = 4;
@@ -188,6 +194,18 @@ export function registerIpcHandlers(state: IpcState): void {
     return { ok: true };
   });
   ipcMain.handle("settings:update", (_event, payload: unknown) => updateAppSettings(state.repositories, assertSettingsInput(payload)));
+  ipcMain.handle("schedules:list", (): ScheduleView[] => state.repositories.schedules.list());
+  ipcMain.handle("schedules:save", (_event, payload: unknown): ScheduleView => {
+    const schedule = state.repositories.schedules.upsert({ ...assertScheduleInput(payload), now: new Date() });
+    registerSchedule(state, schedule);
+    return schedule;
+  });
+  ipcMain.handle("schedules:delete", (_event, payload: unknown) => {
+    const input = assertScheduleDeleteInput(payload);
+    state.repositories.schedules.delete(input.id);
+    state.scheduler.remove(String(input.id));
+    return { ok: true };
+  });
   ipcMain.handle("instances:list", () => state.instanceStore.list());
   ipcMain.handle("instances:save", (_event, payload: unknown) => {
     const input = assertInstanceInput(payload);
@@ -395,6 +413,7 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
   const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
   const quota = createQuotaService(state);
+  const settings = getAppSettings(state.repositories);
   const seriesEpisodes = await mapConcurrent(input.seriesIds, EPISODE_LOAD_CONCURRENCY, async (seriesId) => {
     context.throwIfCancelled();
     const mediaItemId = state.repositories.mediaItems.findIdByArrId("series", seriesId, instanceId);
@@ -409,6 +428,28 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
 
   await mapConcurrent(episodeTasks, SEARCH_CONCURRENCY, async (task) => {
     context.throwIfCancelled();
+    if (
+      state.repositories.activityLog.hasRecentChildActivity({
+        action: "search",
+        childArrId: task.episodeId,
+        instanceId,
+        now: new Date(),
+        windowHours: settings.cooldownHours.episodeSearch,
+      })
+    ) {
+      state.repositories.activityLog.insert({
+        action: "search",
+        childArrId: task.episodeId,
+        instanceId,
+        mediaItemId: task.mediaItemId,
+        message: "Skipped by episode search cooldown",
+        quotaType: "none",
+        status: "skipped",
+        createdAt: new Date(),
+      });
+      context.incrementProgress();
+      return;
+    }
     const reservation = quota.reserve("search", {
       childArrId: task.episodeId,
       instanceId,
@@ -481,6 +522,7 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
   const instanceId = upsertRuntimeInstance(state, "radarr", config);
   const client = new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
   const quota = createQuotaService(state);
+  const settings = getAppSettings(state.repositories);
   const movieSet = new Set(input.movieIds);
   const movies = (await client.getMovies()).filter((movie) => movieSet.has(movie.id));
   const movieTasks = getNonFunMovieIds(movies).map((movieId) => ({
@@ -494,6 +536,28 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
 
   await mapConcurrent(movieTasks, SEARCH_CONCURRENCY, async (task) => {
     context.throwIfCancelled();
+    if (
+      state.repositories.activityLog.hasRecentChildActivity({
+        action: "search",
+        childArrId: task.movieId,
+        instanceId,
+        now: new Date(),
+        windowHours: settings.cooldownHours.movieSearch,
+      })
+    ) {
+      state.repositories.activityLog.insert({
+        action: "search",
+        childArrId: task.movieId,
+        instanceId,
+        mediaItemId: task.mediaItemId,
+        message: "Skipped by movie search cooldown",
+        quotaType: "none",
+        status: "skipped",
+        createdAt: new Date(),
+      });
+      context.incrementProgress();
+      return;
+    }
     const reservation = quota.reserve("search", {
       childArrId: task.movieId,
       instanceId,
@@ -590,6 +654,84 @@ function createQuotaService(state: IpcState): QuotaService {
   });
 }
 
+export function registerPersistedSchedules(state: IpcState): void {
+  for (const schedule of state.repositories.schedules.list()) {
+    registerSchedule(state, schedule);
+  }
+}
+
+function registerSchedule(state: IpcState, schedule: ScheduleView): void {
+  state.scheduler.upsert({
+    id: String(schedule.id),
+    name: schedule.name,
+    enabled: schedule.enabled,
+    rule: {
+      intervalKind: schedule.intervalKind,
+      intervalValue: schedule.intervalValue,
+      timeOfDay: schedule.timeOfDay,
+    },
+    run: async () => {
+      const startedAt = new Date();
+      await runScheduledWorkflow(state, schedule);
+      const nextRunAt = calculateNextRunAt(
+        {
+          intervalKind: schedule.intervalKind,
+          intervalValue: schedule.intervalValue,
+          timeOfDay: schedule.timeOfDay,
+        },
+        startedAt,
+      );
+      state.repositories.schedules.markRun(schedule.id, startedAt, nextRunAt);
+    },
+  });
+}
+
+async function runScheduledWorkflow(state: IpcState, schedule: ScheduleView): Promise<void> {
+  const targets =
+    schedule.targetScope === "all"
+      ? (["sonarr", "radarr"] as const)
+      : ([schedule.targetScope] as const);
+
+  for (const target of targets) {
+    if (schedule.actions.includes("analysis")) {
+      const job = target === "sonarr" ? enqueueSonarrAnalysis(state, `Scheduled ${schedule.name}: Sonarr analysis`) : enqueueRadarrAnalysis(state, `Scheduled ${schedule.name}: Radarr analysis`);
+      await state.jobRunner.waitFor(job.id);
+    }
+
+    if (schedule.actions.includes("search")) {
+      if (target === "sonarr") {
+        const seriesIds = state.repositories.mediaItems.listSonarrRows().filter((row) => row.nonFunFiles > 0).map((row) => row.arrId);
+        if (seriesIds.length > 0) {
+          const job = enqueueSonarrSearch(state, { seriesIds });
+          await state.jobRunner.waitFor(job.id);
+        }
+      } else {
+        const movieIds = state.repositories.mediaItems.listRadarrRows().filter((row) => row.nonFunFiles > 0).map((row) => row.arrId);
+        if (movieIds.length > 0) {
+          const job = enqueueRadarrSearch(state, { movieIds });
+          await state.jobRunner.waitFor(job.id);
+        }
+      }
+    }
+
+    if (schedule.actions.includes("grab")) {
+      if (target === "sonarr") {
+        const seriesIds = state.repositories.mediaItems.listSonarrRows().filter((row) => row.pendingFunCandidates > 0).map((row) => row.arrId);
+        if (seriesIds.length > 0) {
+          const job = enqueueSonarrGrab(state, { seriesIds });
+          await state.jobRunner.waitFor(job.id);
+        }
+      } else {
+        const movieIds = state.repositories.mediaItems.listRadarrRows().filter((row) => row.pendingFunCandidates > 0).map((row) => row.arrId);
+        if (movieIds.length > 0) {
+          const job = enqueueRadarrGrab(state, { movieIds });
+          await state.jobRunner.waitFor(job.id);
+        }
+      }
+    }
+  }
+}
+
 function upsertRuntimeInstance(
   state: IpcState,
   kind: InstanceKind,
@@ -671,6 +813,46 @@ function assertManualGrabInput(payload: unknown): ManualGrabInput {
     count,
     note: typeof value.note === "string" && value.note.trim() ? value.note.trim() : "Manual grab entry",
   };
+}
+
+function assertScheduleInput(payload: unknown): ScheduleInput {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Invalid schedule payload");
+  }
+  const value = payload as Partial<ScheduleInput>;
+  const actions = Array.isArray(value.actions)
+    ? value.actions.filter((action): action is ScheduleInput["actions"][number] => action === "analysis" || action === "search" || action === "grab")
+    : [];
+  if (actions.length === 0) {
+    throw new Error("Schedule needs at least one action");
+  }
+  if (value.targetScope !== "all" && value.targetScope !== "sonarr" && value.targetScope !== "radarr") {
+    throw new Error("Invalid schedule target");
+  }
+  if (value.intervalKind !== "minutes" && value.intervalKind !== "hours" && value.intervalKind !== "days" && value.intervalKind !== "daily_time") {
+    throw new Error("Invalid schedule interval");
+  }
+  return {
+    id: Number.isInteger(value.id) && Number(value.id) > 0 ? Number(value.id) : undefined,
+    name: typeof value.name === "string" && value.name.trim() ? value.name.trim() : "Scheduled job",
+    enabled: value.enabled ?? true,
+    actions,
+    targetScope: value.targetScope,
+    intervalKind: value.intervalKind,
+    intervalValue: Number.isInteger(value.intervalValue) ? Number(value.intervalValue) : undefined,
+    timeOfDay: typeof value.timeOfDay === "string" ? value.timeOfDay : undefined,
+  };
+}
+
+function assertScheduleDeleteInput(payload: unknown): ScheduleDeleteInput {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Invalid schedule delete payload");
+  }
+  const value = payload as Partial<ScheduleDeleteInput>;
+  if (!Number.isInteger(value.id) || Number(value.id) <= 0) {
+    throw new Error("Schedule id is required");
+  }
+  return { id: Number(value.id) };
 }
 
 function formatDateTime(value: string | undefined): string {
