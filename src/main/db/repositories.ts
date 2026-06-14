@@ -6,6 +6,7 @@ import { calculateNextRunAt } from "../../shared/schedule";
 import type {
   InstanceKind,
   LibrarySummary,
+  MediaItemDetails,
   RadarrMovieTableRow,
   ScheduleInput,
   ScheduleView,
@@ -404,6 +405,92 @@ export function createRepositories(db: AppDatabase) {
             status: nonFunFiles > 0 ? "searchable" : "ready",
           };
         });
+      },
+
+      itemDetails(kind: "series" | "movie", arrId: number): MediaItemDetails {
+        const item = db
+          .prepare("select id from media_items where kind = ? and arr_id = ? order by id desc limit 1")
+          .get(kind, arrId) as { id: number } | undefined;
+        if (!item) {
+          return { kind, arrId, nonFunFiles: [], candidates: [] };
+        }
+
+        const fileRows = db
+          .prepare(
+            `select
+               child_arr_id as childArrId,
+               season_number as seasonNumber,
+               episode_number as episodeNumber,
+               relative_path as relativePath,
+               release_group as releaseGroup,
+               quality_name as quality,
+               size_bytes as sizeBytes
+             from media_files
+             where media_item_id = ? and is_fun = 0
+             order by season_number asc, episode_number asc, id asc`,
+          )
+          .all(item.id) as Array<{
+          childArrId: number | null;
+          seasonNumber: number | null;
+          episodeNumber: number | null;
+          relativePath: string | null;
+          releaseGroup: string | null;
+          quality: string | null;
+          sizeBytes: number;
+        }>;
+
+        const candidateRows = db
+          .prepare(
+            `select
+               id,
+               child_arr_id as childArrId,
+               title,
+               release_group as releaseGroup,
+               quality_name as quality,
+               indexer,
+               size_bytes as sizeBytes,
+               approved,
+               found_at as foundAt
+             from release_candidates
+             where media_item_id = ? and is_fun = 1
+             order by found_at asc, id asc`,
+          )
+          .all(item.id) as Array<{
+          id: number;
+          childArrId: number | null;
+          title: string;
+          releaseGroup: string | null;
+          quality: string | null;
+          indexer: string | null;
+          sizeBytes: number;
+          approved: 0 | 1 | null;
+          foundAt: string;
+        }>;
+
+        return {
+          kind,
+          arrId,
+          nonFunFiles: fileRows.map((row) => ({
+            childArrId: row.childArrId ?? 0,
+            seasonNumber: row.seasonNumber,
+            episodeNumber: row.episodeNumber,
+            relativePath: row.relativePath,
+            releaseGroup: row.releaseGroup,
+            quality: row.quality,
+            sizeBytes: row.sizeBytes,
+          })),
+          candidates: candidateRows.map((row) => ({
+            id: row.id,
+            childArrId: row.childArrId ?? 0,
+            title: row.title,
+            releaseGroup: row.releaseGroup,
+            quality: row.quality,
+            indexer: row.indexer,
+            sizeBytes: row.sizeBytes,
+            approved: row.approved === null ? null : Boolean(row.approved),
+            foundAt: row.foundAt,
+          })),
+        };
       },
     },
 

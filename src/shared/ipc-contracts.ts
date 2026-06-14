@@ -14,6 +14,7 @@ export type IpcChannel =
   | "library:summary"
   | "library:sonarr"
   | "library:radarr"
+  | "library:itemDetails"
   | "stats:summary"
   | "activity:recent"
   | "jobs:list"
@@ -114,6 +115,40 @@ export type RadarrMovieTableRow = {
   lastSearched: string;
   lastGrabbed: string;
   status: "ready" | "searchable" | "cooldown" | "failed";
+};
+
+export type MediaItemDetailsInput = {
+  kind: "series" | "movie";
+  arrId: number;
+};
+
+export type NonFunFileView = {
+  childArrId: number;
+  seasonNumber: number | null;
+  episodeNumber: number | null;
+  relativePath: string | null;
+  releaseGroup: string | null;
+  quality: string | null;
+  sizeBytes: number;
+};
+
+export type ReleaseCandidateView = {
+  id: number;
+  childArrId: number;
+  title: string;
+  releaseGroup: string | null;
+  quality: string | null;
+  indexer: string | null;
+  sizeBytes: number;
+  approved: boolean | null;
+  foundAt: string;
+};
+
+export type MediaItemDetails = {
+  kind: "series" | "movie";
+  arrId: number;
+  nonFunFiles: NonFunFileView[];
+  candidates: ReleaseCandidateView[];
 };
 
 export type JobStatus = "queued" | "running" | "blocked_by_budget" | "completed" | "failed" | "cancelled";

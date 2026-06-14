@@ -3,8 +3,10 @@ import type { ColumnDef, ColumnFiltersState, Row } from "@tanstack/react-table";
 import { ExternalLink, Eye, Radar, Search, Zap } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
+import { MediaDetailLists } from "../components/MediaDetailLists";
 import { ReleaseGroupBadge } from "../components/ReleaseGroupBadge";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
+import { useItemDetails } from "../state/use-item-details";
 import { updateColumnFilter } from "../state/table-state";
 import { usePersistedTableState } from "../state/use-persisted-table-state";
 import {
@@ -17,7 +19,7 @@ import {
   ShareCell,
   TitleCell,
 } from "./SonarrSeriesView";
-import type { RadarrMovieTableRow } from "../../shared/ipc-contracts";
+import type { MediaItemDetails, RadarrMovieTableRow } from "../../shared/ipc-contracts";
 
 type MovieStatus = RadarrMovieTableRow["status"];
 
@@ -32,6 +34,7 @@ export function RadarrMoviesView({
   analyzing = false,
   onAnalyze,
   onGrab,
+  onLoadDetails,
   onOpenInRadarr,
   onSearch,
   rows: liveRows,
@@ -40,12 +43,14 @@ export function RadarrMoviesView({
   analyzing?: boolean;
   onAnalyze?: (movieIds?: number[]) => void;
   onGrab?: (movieIds: number[]) => void;
+  onLoadDetails?: (kind: "series" | "movie", arrId: number) => Promise<MediaItemDetails>;
   onOpenInRadarr?: (movieId: number) => void;
   onSearch?: (movieIds: number[]) => void;
   rows?: RadarrMovieTableRow[];
   statusMessage?: string;
 }) {
   const [detailsRow, setDetailsRow] = useState<RadarrMovieTableRow | null>(null);
+  const { details, loading: detailsLoading } = useItemDetails("movie", detailsRow?.arrId ?? null, onLoadDetails);
   const tableState = usePersistedTableState("arr-ops.table.radarr", {
     sorting: [{ id: "nonFunFiles", desc: true }],
   });
@@ -239,6 +244,7 @@ export function RadarrMoviesView({
             <Detail label="Last searched" value={detailsRow.lastSearched} />
             <Detail label="Last grabbed" value={detailsRow.lastGrabbed} />
           </div>
+          <MediaDetailLists details={details} kind="movie" loading={detailsLoading} />
         </section>
       ) : null}
     </div>

@@ -9,6 +9,8 @@ import type {
   JobView,
   LibrarySummary,
   ManualGrabInput,
+  MediaItemDetails,
+  MediaItemDetailsInput,
   QuotaSummary,
   RadarrActionResult,
   RadarrMovieActionInput,
@@ -84,6 +86,10 @@ export function getSonarrRows(): Promise<SonarrSeriesTableRow[]> {
 
 export function getRadarrRows(): Promise<RadarrMovieTableRow[]> {
   return invokeIpc<RadarrMovieTableRow[]>("library:radarr");
+}
+
+export function getItemDetails(kind: "series" | "movie", arrId: number): Promise<MediaItemDetails> {
+  return invokeIpc<MediaItemDetails>("library:itemDetails", { kind, arrId } satisfies MediaItemDetailsInput);
 }
 
 export function listJobs(): Promise<JobView[]> {
@@ -262,6 +268,9 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
   }
   if (channel === "jobs:list" || channel === "jobs:events" || channel === "activity:recent") {
     return [] as T;
+  }
+  if (channel === "library:itemDetails") {
+    return { kind: "series", arrId: 0, nonFunFiles: [], candidates: [] } as T;
   }
   if (channel === "library:summary") {
     return {

@@ -22,6 +22,7 @@ import type {
   JobView,
   LibrarySummary,
   ManualGrabInput,
+  MediaItemDetailsInput,
   QuotaSummary,
   RadarrActionResult,
   RadarrMovieActionInput,
@@ -110,6 +111,10 @@ export function registerIpcHandlers(state: IpcState): void {
   ipcMain.handle("library:summary", (): LibrarySummary => state.repositories.mediaItems.summary());
   ipcMain.handle("library:sonarr", () => state.repositories.mediaItems.listSonarrRows().map(formatSonarrRowDates));
   ipcMain.handle("library:radarr", () => state.repositories.mediaItems.listRadarrRows().map(formatRadarrRowDates));
+  ipcMain.handle("library:itemDetails", (_event, payload: unknown) => {
+    const input = assertItemDetailsInput(payload);
+    return state.repositories.mediaItems.itemDetails(input.kind, input.arrId);
+  });
   ipcMain.handle("stats:summary", () => state.repositories.stats.summary());
   ipcMain.handle("activity:recent", (): ActivityRowView[] => state.repositories.activityLog.listRecent(50).map(formatActivityRow));
   ipcMain.handle("quota:summary", (): QuotaSummary => getQuotaSummary(state));
@@ -488,30 +493,60 @@ async function grabSonarrCandidates(state: IpcState, input: SonarrSeriesActionIn
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
   const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
   const quota = createQuotaService(state);
+  context.addEvent(
+    "info",
+    `Requested grab for ${input.seriesIds.length} Sonarr series: [${input.seriesIds.join(", ")}]`,
+  );
   const candidates = state.repositories.releaseCandidates.listForSeriesIds(input.seriesIds);
 
   context.setProgressTotal(candidates.length);
+  if (candidates.length === 0) {
+    context.addEvent(
+      "warning",
+      "No stored Sonarr FuN* candidates matched the requested series — nothing to grab. Run a FuN* search first so candidates are stored.",
+    );
+    return;
+  }
   context.addEvent("info", `Grabbing ${candidates.length} stored FuN* candidates with concurrency ${GRAB_CONCURRENCY}`);
 
   await mapConcurrent(candidates, GRAB_CONCURRENCY, async (candidate) => {
     context.throwIfCancelled();
+    const release = candidate.release;
+    const releaseLabel = release.title ?? `candidate #${candidate.id}`;
+    context.addEvent(
+      "info",
+      `Grabbing "${releaseLabel}" (seriesArrId=${candidate.childArrId}, indexer=${release.indexer ?? "?"}, ` +
+        `approved=${release.approved ?? "?"}, downloadAllowed=${release.downloadAllowed ?? "?"}, guid=${release.guid ?? "?"})`,
+    );
     const reservation = quota.reserve("grab", {
       childArrId: candidate.childArrId,
       instanceId,
       mediaItemId: candidate.mediaItemId ?? undefined,
-      message: candidate.release.title ?? "Grab Sonarr FuN* candidate",
+      message: releaseLabel,
     });
     if (!reservation.allowed) {
+      context.addEvent("warning", `Grab budget exhausted before grabbing "${releaseLabel}"`);
       context.blockByBudget("Grab budget exhausted before Sonarr grab");
     }
     try {
-      await client.grabRelease(candidate.release);
+      const fresh = await client.getReleasesForEpisode(candidate.childArrId);
+      context.throwIfCancelled();
+      const match = release.guid ? fresh.find((item) => item.guid === release.guid) : undefined;
+      if (!match) {
+        throw new Error(
+          `Release no longer offered by the indexer (guid=${release.guid ?? "?"}). Sonarr only keeps a release grabbable for a short time after a search — re-run a FuN* search, then grab promptly.`,
+        );
+      }
+      await client.grabRelease(match);
       context.throwIfCancelled();
       state.repositories.releaseCandidates.delete(candidate.id);
-      quota.complete(reservation.activityId!, "success", candidate.release.title ?? "FuN* candidate grabbed");
+      quota.complete(reservation.activityId!, "success", releaseLabel);
+      context.addEvent("info", `Grabbed "${releaseLabel}" (re-fetched release, POST /release) and removed it from the candidate store`);
       context.incrementProgress();
     } catch (error) {
-      quota.complete(reservation.activityId!, "failed", error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      quota.complete(reservation.activityId!, "failed", message);
+      context.addEvent("error", `Failed to grab "${releaseLabel}": ${message}`);
       context.incrementProgress({ failed: true });
     }
   });
@@ -596,30 +631,60 @@ async function grabRadarrCandidates(state: IpcState, input: RadarrMovieActionInp
   const instanceId = upsertRuntimeInstance(state, "radarr", config);
   const client = new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
   const quota = createQuotaService(state);
+  context.addEvent(
+    "info",
+    `Requested grab for ${input.movieIds.length} Radarr movie(s): [${input.movieIds.join(", ")}]`,
+  );
   const candidates = state.repositories.releaseCandidates.listForMovieIds(input.movieIds);
 
   context.setProgressTotal(candidates.length);
+  if (candidates.length === 0) {
+    context.addEvent(
+      "warning",
+      "No stored Radarr FuN* candidates matched the requested movies — nothing to grab. Run a FuN* search first so candidates are stored.",
+    );
+    return;
+  }
   context.addEvent("info", `Grabbing ${candidates.length} stored Radarr FuN* candidates with concurrency ${GRAB_CONCURRENCY}`);
 
   await mapConcurrent(candidates, GRAB_CONCURRENCY, async (candidate) => {
     context.throwIfCancelled();
+    const release = candidate.release;
+    const releaseLabel = release.title ?? `candidate #${candidate.id}`;
+    context.addEvent(
+      "info",
+      `Grabbing "${releaseLabel}" (movieArrId=${candidate.childArrId}, indexer=${release.indexer ?? "?"}, ` +
+        `approved=${release.approved ?? "?"}, downloadAllowed=${release.downloadAllowed ?? "?"}, guid=${release.guid ?? "?"})`,
+    );
     const reservation = quota.reserve("grab", {
       childArrId: candidate.childArrId,
       instanceId,
       mediaItemId: candidate.mediaItemId ?? undefined,
-      message: candidate.release.title ?? "Grab Radarr FuN* candidate",
+      message: releaseLabel,
     });
     if (!reservation.allowed) {
+      context.addEvent("warning", `Grab budget exhausted before grabbing "${releaseLabel}"`);
       context.blockByBudget("Grab budget exhausted before Radarr grab");
     }
     try {
-      await client.grabRelease(candidate.release);
+      const fresh = await client.getReleasesForMovie(candidate.childArrId);
+      context.throwIfCancelled();
+      const match = release.guid ? fresh.find((item) => item.guid === release.guid) : undefined;
+      if (!match) {
+        throw new Error(
+          `Release no longer offered by the indexer (guid=${release.guid ?? "?"}). Radarr only keeps a release grabbable for a short time after a search — re-run a FuN* search, then grab promptly.`,
+        );
+      }
+      await client.grabRelease(match);
       context.throwIfCancelled();
       state.repositories.releaseCandidates.delete(candidate.id);
-      quota.complete(reservation.activityId!, "success", candidate.release.title ?? "Radarr FuN* candidate grabbed");
+      quota.complete(reservation.activityId!, "success", releaseLabel);
+      context.addEvent("info", `Grabbed "${releaseLabel}" (re-fetched release, POST /release) and removed it from the candidate store`);
       context.incrementProgress();
     } catch (error) {
-      quota.complete(reservation.activityId!, "failed", error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      quota.complete(reservation.activityId!, "failed", message);
+      context.addEvent("error", `Failed to grab "${releaseLabel}": ${message}`);
       context.incrementProgress({ failed: true });
     }
   });
@@ -745,6 +810,20 @@ function upsertRuntimeInstance(
     enabled: true,
     now: new Date(),
   });
+}
+
+function assertItemDetailsInput(payload: unknown): MediaItemDetailsInput {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Invalid item details payload");
+  }
+  const value = payload as Partial<MediaItemDetailsInput>;
+  if (value.kind !== "series" && value.kind !== "movie") {
+    throw new Error("Invalid media item kind");
+  }
+  if (!Number.isInteger(value.arrId) || (value.arrId as number) <= 0) {
+    throw new Error("Invalid arrId");
+  }
+  return { kind: value.kind, arrId: value.arrId as number };
 }
 
 function assertInstanceInput(payload: unknown): InstanceConfigInput {

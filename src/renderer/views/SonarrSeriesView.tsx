@@ -4,10 +4,12 @@ import { ExternalLink, Eye, Radar, Search, Zap } from "lucide-react";
 import { clsx } from "clsx";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
+import { MediaDetailLists } from "../components/MediaDetailLists";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
+import { useItemDetails } from "../state/use-item-details";
 import { updateColumnFilter, type TableFilterValue } from "../state/table-state";
 import { usePersistedTableState } from "../state/use-persisted-table-state";
-import type { SonarrSeriesTableRow } from "../../shared/ipc-contracts";
+import type { MediaItemDetails, SonarrSeriesTableRow } from "../../shared/ipc-contracts";
 
 type SeriesStatus = "ready" | "searchable" | "cooldown" | "failed";
 
@@ -24,6 +26,7 @@ export function SonarrSeriesView({
   analyzing = false,
   onAnalyze,
   onGrab,
+  onLoadDetails,
   onOpenInSonarr,
   onSearch,
   rows: liveRows,
@@ -32,12 +35,14 @@ export function SonarrSeriesView({
   analyzing?: boolean;
   onAnalyze?: (seriesIds?: number[]) => void;
   onGrab?: (seriesIds: number[]) => void;
+  onLoadDetails?: (kind: "series" | "movie", arrId: number) => Promise<MediaItemDetails>;
   onOpenInSonarr?: (seriesId: number, titleSlug?: string) => void;
   onSearch?: (seriesIds: number[]) => void;
   rows?: SonarrSeriesTableRow[];
   statusMessage?: string;
 }) {
   const [detailsRow, setDetailsRow] = useState<SonarrSeriesRow | null>(null);
+  const { details, loading: detailsLoading } = useItemDetails("series", detailsRow?.arrId ?? null, onLoadDetails);
   const tableState = usePersistedTableState("arr-ops.table.sonarr", {
     sorting: [{ id: "nonFunFiles", desc: true }],
   });
@@ -237,6 +242,7 @@ export function SonarrSeriesView({
             <Detail label="Last searched" value={detailsRow.lastSearched} />
             <Detail label="Last grabbed" value={detailsRow.lastGrabbed} />
           </div>
+          <MediaDetailLists details={details} kind="series" loading={detailsLoading} />
         </section>
       ) : null}
     </div>
