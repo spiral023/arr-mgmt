@@ -11,7 +11,8 @@ const statements = [
     last_status text,
     last_status_at text,
     created_at text not null,
-    updated_at text not null
+    updated_at text not null,
+    unique(kind)
   )`,
   `create table if not exists media_items (
     id integer primary key autoincrement,
@@ -66,7 +67,7 @@ const statements = [
     found_at text not null
   )`,
   `create table if not exists jobs (
-    id integer primary key autoincrement,
+    id text primary key,
     name text not null,
     kind text not null check (kind in ('analysis', 'search', 'grab', 'combined')),
     target_scope text not null check (target_scope in ('all', 'sonarr', 'radarr', 'selected')),
@@ -81,7 +82,7 @@ const statements = [
   )`,
   `create table if not exists job_events (
     id integer primary key autoincrement,
-    job_id integer not null references jobs(id) on delete cascade,
+    job_id text not null references jobs(id) on delete cascade,
     level text not null check (level in ('info', 'warning', 'error')),
     message text not null,
     payload_json text,

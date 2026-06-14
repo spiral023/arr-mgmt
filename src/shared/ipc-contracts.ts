@@ -7,11 +7,14 @@ export type IpcChannel =
   | "library:summary"
   | "library:sonarr"
   | "library:radarr"
+  | "activity:recent"
   | "jobs:list"
+  | "jobs:events"
   | "jobs:enqueue"
   | "quota:summary"
   | "sonarr:search"
-  | "sonarr:grab";
+  | "sonarr:grab"
+  | "sonarr:openSeries";
 
 export type SonarrSeriesActionInput = {
   seriesIds: number[];
@@ -20,6 +23,7 @@ export type SonarrSeriesActionInput = {
 export type SonarrActionResult = {
   ok: boolean;
   message: string;
+  jobId?: string;
   searchedEpisodes?: number;
   candidatesFound?: number;
   grabbed?: number;
@@ -66,6 +70,53 @@ export type SonarrSeriesTableRow = {
   lastSearched: string;
   lastGrabbed: string;
   status: "ready" | "searchable" | "cooldown" | "failed";
+};
+
+export type JobStatus = "queued" | "running" | "blocked_by_budget" | "completed" | "failed" | "cancelled";
+
+export type JobView = {
+  id: string;
+  name: string;
+  kind: "analysis" | "search" | "grab" | "combined";
+  target: "all" | "sonarr" | "radarr" | "selected";
+  status: JobStatus;
+  progressCurrent: number;
+  progressTotal: number;
+  successCount: number;
+  failureCount: number;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
+export type JobEventView = {
+  jobId: string;
+  level: "info" | "warning" | "error";
+  message: string;
+  createdAt: string;
+};
+
+export type LibrarySummary = {
+  totalSeries: number;
+  totalMovies: number;
+  totalFiles: number;
+  totalSizeBytes: number;
+  funFiles: number;
+  funShare: number;
+};
+
+export type QuotaSummary = {
+  search: { used: number; remaining: number; limit: number };
+  grab: { used: number; remaining: number; limit: number };
+};
+
+export type ActivityRowView = {
+  action: string;
+  app: string;
+  at: string;
+  item: string;
+  quota: string;
+  status: string;
 };
 
 export type RendererApi = {

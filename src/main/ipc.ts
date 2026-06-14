@@ -1,31 +1,47 @@
-import { ipcMain } from "electron";
+import { ipcMain, shell } from "electron";
 import { analyzeSonarrSeries } from "./arr/analysis-service";
-import type { MediaItemAnalysis } from "./arr/arr-types";
 import { RadarrClient } from "./arr/radarr-client";
 import { SonarrClient } from "./arr/sonarr-client";
 import { getNonFunEpisodeIds, selectBestFunRelease } from "./arr/sonarr-operations";
 import { mapConcurrent } from "./async/map-concurrent";
+import type { createRepositories } from "./db/repositories";
 import type { InstanceStore } from "./instances/instance-store";
-import type { JobRunner } from "./scheduler/job-runner";
+import type { JobContext, JobRunner } from "./scheduler/job-runner";
 import type {
+  ActivityRowView,
   InstanceConfigInput,
   InstanceKind,
   InstanceTestResult,
+  JobEventView,
+  JobView,
+  LibrarySummary,
+  QuotaSummary,
   SonarrActionResult,
   SonarrSeriesActionInput,
-  SonarrSeriesTableRow,
 } from "../shared/ipc-contracts";
 
 export type IpcState = {
   instanceStore: InstanceStore;
   jobRunner: JobRunner;
+  repositories: ReturnType<typeof createRepositories>;
 };
 
-let sonarrRows: SonarrSeriesTableRow[] = [];
-const sonarrCandidates = new Map<number, { seriesId: number; release: import("./arr/arr-types").ArrRelease }>();
+const ANALYSIS_CONCURRENCY = 16;
+const EPISODE_LOAD_CONCURRENCY = 8;
+const SEARCH_CONCURRENCY = 12;
+const GRAB_CONCURRENCY = 4;
+const SEARCH_LIMIT = 2_000;
+const GRAB_LIMIT = 400;
 
 export function registerIpcHandlers(state: IpcState): void {
-  ipcMain.handle("jobs:list", () => state.jobRunner.listJobs());
+  ipcMain.handle("jobs:list", (): JobView[] => state.jobRunner.listJobs());
+  ipcMain.handle("jobs:events", (_event, payload: unknown): JobEventView[] => {
+    const jobId =
+      typeof payload === "object" && payload !== null && "jobId" in payload && typeof payload.jobId === "string"
+        ? payload.jobId
+        : undefined;
+    return state.jobRunner.listEvents(jobId);
+  });
   ipcMain.handle("jobs:enqueue", async (_event, payload: unknown) => {
     const name =
       typeof payload === "object" && payload !== null && "name" in payload && typeof payload.name === "string"
@@ -37,42 +53,58 @@ export function registerIpcHandlers(state: IpcState): void {
         : "";
 
     if (target === "sonarr") {
-      const job = state.jobRunner.enqueue({
-        name,
-        kind: "analysis",
-        steps: [
-          async () => {
-            sonarrRows = await analyzeSonarrLibrary(state.instanceStore);
-          },
-        ],
-      });
-
-      await waitForJobCompletion(state.jobRunner, job.id);
-      return job;
+      return enqueueSonarrAnalysis(state, name);
     }
 
     return state.jobRunner.enqueue({
       name,
       kind: "analysis",
+      target: "all",
       steps: [async () => undefined],
     });
   });
-  ipcMain.handle("library:summary", () => ({
-    totalSeries: 0,
-    totalMovies: 0,
-    funShare: 0,
-  }));
-  ipcMain.handle("library:sonarr", () => sonarrRows);
+  ipcMain.handle("library:summary", (): LibrarySummary => state.repositories.mediaItems.summary());
+  ipcMain.handle("library:sonarr", () => state.repositories.mediaItems.listSonarrRows().map(formatSonarrRowDates));
   ipcMain.handle("library:radarr", () => []);
-  ipcMain.handle("quota:summary", () => ({
-    search: { used: 0, remaining: 2000, limit: 2000 },
-    grab: { used: 0, remaining: 400, limit: 400 },
-  }));
-  ipcMain.handle("sonarr:search", async (_event, payload: unknown): Promise<SonarrActionResult> => {
-    return searchSonarrCandidates(state.instanceStore, assertSeriesActionInput(payload));
+  ipcMain.handle("activity:recent", (): ActivityRowView[] => state.repositories.activityLog.listRecent(50).map(formatActivityRow));
+  ipcMain.handle("quota:summary", (): QuotaSummary => {
+    const now = new Date();
+    const searchUsed = state.repositories.activityLog.countSince("search", now, 24);
+    const grabUsed = state.repositories.activityLog.countSince("grab", now, 24);
+    return {
+      search: { used: searchUsed, remaining: Math.max(0, SEARCH_LIMIT - searchUsed), limit: SEARCH_LIMIT },
+      grab: { used: grabUsed, remaining: Math.max(0, GRAB_LIMIT - grabUsed), limit: GRAB_LIMIT },
+    };
   });
-  ipcMain.handle("sonarr:grab", async (_event, payload: unknown): Promise<SonarrActionResult> => {
-    return grabSonarrCandidates(state.instanceStore, assertSeriesActionInput(payload));
+  ipcMain.handle("sonarr:search", (_event, payload: unknown): SonarrActionResult => {
+    const input = assertSeriesActionInput(payload);
+    const job = enqueueSonarrSearch(state, input);
+    return {
+      ok: true,
+      jobId: job.id,
+      message: `Queued search for ${input.seriesIds.length} Sonarr series.`,
+    };
+  });
+  ipcMain.handle("sonarr:grab", (_event, payload: unknown): SonarrActionResult => {
+    const input = assertSeriesActionInput(payload);
+    const job = enqueueSonarrGrab(state, input);
+    return {
+      ok: true,
+      jobId: job.id,
+      message: `Queued grab for ${input.seriesIds.length} Sonarr series.`,
+    };
+  });
+  ipcMain.handle("sonarr:openSeries", async (_event, payload: unknown) => {
+    const seriesId =
+      typeof payload === "object" && payload !== null && "seriesId" in payload && Number.isInteger(payload.seriesId)
+        ? payload.seriesId
+        : undefined;
+    if (!seriesId) {
+      throw new Error("seriesId is required");
+    }
+    const config = state.instanceStore.getWithApiKey("sonarr");
+    await shell.openExternal(`${config.baseUrl.replace(/\/+$/, "")}/series/${seriesId}`);
+    return { ok: true };
   });
   ipcMain.handle("settings:get", () => ({
     instances: state.instanceStore.list(),
@@ -80,7 +112,17 @@ export function registerIpcHandlers(state: IpcState): void {
   ipcMain.handle("settings:update", (_event, payload: unknown) => payload);
   ipcMain.handle("instances:list", () => state.instanceStore.list());
   ipcMain.handle("instances:save", (_event, payload: unknown) => {
-    return state.instanceStore.save(assertInstanceInput(payload));
+    const input = assertInstanceInput(payload);
+    const saved = state.instanceStore.save(input);
+    state.repositories.instances.upsert({
+      kind: saved.kind,
+      name: saved.name,
+      baseUrl: saved.baseUrl,
+      apiKeyEncrypted: "managed-by-instance-store",
+      enabled: saved.enabled,
+      now: new Date(),
+    });
+    return saved;
   });
   ipcMain.handle("instances:test", async (_event, payload: unknown): Promise<InstanceTestResult> => {
     const input = assertInstanceInput(payload);
@@ -105,98 +147,184 @@ export function registerIpcHandlers(state: IpcState): void {
   });
 }
 
-async function searchSonarrCandidates(
-  instanceStore: InstanceStore,
-  input: SonarrSeriesActionInput,
-): Promise<SonarrActionResult> {
-  const config = instanceStore.getWithApiKey("sonarr");
-  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
-  let searchedEpisodes = 0;
-  let candidatesFound = 0;
-
-  for (const seriesId of input.seriesIds) {
-    const episodes = await client.getEpisodes(seriesId, true);
-    const episodeIds = getNonFunEpisodeIds(episodes);
-    searchedEpisodes += episodeIds.length;
-
-    for (const episodeId of episodeIds) {
-      const releases = await client.getReleasesForEpisode(episodeId);
-      const candidate = selectBestFunRelease(releases);
-      if (candidate) {
-        sonarrCandidates.set(episodeId, { seriesId, release: candidate });
-        candidatesFound += 1;
-      }
-    }
-  }
-
-  return {
-    ok: true,
-    message: `Searched ${searchedEpisodes} non-FuN episodes, found ${candidatesFound} FuN* candidates.`,
-    searchedEpisodes,
-    candidatesFound,
-  };
+function enqueueSonarrAnalysis(state: IpcState, name = "Analyze Sonarr") {
+  return state.jobRunner.enqueue({
+    name,
+    kind: "analysis",
+    target: "sonarr",
+    run: async (context) => analyzeSonarrLibrary(state, context),
+  });
 }
 
-async function grabSonarrCandidates(
-  instanceStore: InstanceStore,
-  input: SonarrSeriesActionInput,
-): Promise<SonarrActionResult> {
-  const config = instanceStore.getWithApiKey("sonarr");
-  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
-  const selected = [...sonarrCandidates.entries()].filter(([, candidate]) => input.seriesIds.includes(candidate.seriesId));
-  let grabbed = 0;
-  let failed = 0;
-
-  for (const [episodeId, candidate] of selected) {
-    try {
-      await client.grabRelease(candidate.release);
-      sonarrCandidates.delete(episodeId);
-      grabbed += 1;
-    } catch {
-      failed += 1;
-    }
-  }
-
-  return {
-    ok: failed === 0,
-    message: `Grabbed ${grabbed} FuN* candidates${failed ? `, ${failed} failed` : ""}.`,
-    grabbed,
-    failed,
-  };
+function enqueueSonarrSearch(state: IpcState, input: SonarrSeriesActionInput) {
+  return state.jobRunner.enqueue({
+    name: "Search non-FuN Sonarr episodes",
+    kind: "search",
+    target: "selected",
+    progressTotal: input.seriesIds.length,
+    run: async (context) => searchSonarrCandidates(state, input, context),
+  });
 }
 
-async function analyzeSonarrLibrary(instanceStore: InstanceStore): Promise<SonarrSeriesTableRow[]> {
-  const config = instanceStore.getWithApiKey("sonarr");
+function enqueueSonarrGrab(state: IpcState, input: SonarrSeriesActionInput) {
+  return state.jobRunner.enqueue({
+    name: "Grab Sonarr FuN candidates",
+    kind: "grab",
+    target: "selected",
+    progressTotal: input.seriesIds.length,
+    run: async (context) => grabSonarrCandidates(state, input, context),
+  });
+}
+
+async function analyzeSonarrLibrary(state: IpcState, context: JobContext): Promise<void> {
+  const config = state.instanceStore.getWithApiKey("sonarr");
+  const instanceId = upsertRuntimeInstance(state, "sonarr", config);
   const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
   const seriesList = await client.getSeries();
   const analyzedAt = new Date();
 
-  const rows = await mapConcurrent(seriesList, 8, async (series) => {
-    const episodes = await client.getEpisodes(series.id, true);
-    return toSonarrRow(analyzeSonarrSeries(series, episodes, analyzedAt));
-  });
+  context.setProgressTotal(seriesList.length);
+  context.addEvent("info", `Loaded ${seriesList.length} Sonarr series`);
 
-  return rows.sort((a, b) => a.title.localeCompare(b.title));
+  await mapConcurrent(seriesList, ANALYSIS_CONCURRENCY, async (series) => {
+    try {
+      const episodes = await client.getEpisodes(series.id, true);
+      const item = analyzeSonarrSeries(series, episodes, analyzedAt);
+      const mediaItemId = state.repositories.mediaItems.upsertAnalysis(instanceId, item);
+      state.repositories.activityLog.insert({
+        action: "analysis",
+        quotaType: "none",
+        status: "success",
+        instanceId,
+        mediaItemId,
+        message: series.title,
+        createdAt: new Date(),
+      });
+      context.incrementProgress();
+    } catch (error) {
+      state.repositories.activityLog.insert({
+        action: "analysis",
+        quotaType: "none",
+        status: "failed",
+        instanceId,
+        message: `${series.title}: ${error instanceof Error ? error.message : String(error)}`,
+        createdAt: new Date(),
+      });
+      context.incrementProgress({ failed: true });
+    }
+  });
 }
 
-function toSonarrRow(item: MediaItemAnalysis): SonarrSeriesTableRow {
-  return {
-    id: `series-${item.arrId}`,
-    arrId: item.arrId,
-    title: item.title,
-    monitored: item.monitored,
-    episodes: item.totalChildren,
-    files: item.childrenWithFile,
-    totalSizeBytes: item.totalSizeBytes,
-    funFiles: item.funChildren,
-    funShare: item.funShare,
-    nonFunFiles: item.nonFunChildren,
-    hasFiles: item.hasFile,
-    lastAnalyzed: formatDateTime(item.lastAnalyzedAt),
-    lastSearched: "-",
-    lastGrabbed: "-",
-    status: item.nonFunChildren > 0 && item.funChildren > 0 ? "searchable" : "ready",
-  };
+async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesActionInput, context: JobContext): Promise<void> {
+  const config = state.instanceStore.getWithApiKey("sonarr");
+  const instanceId = upsertRuntimeInstance(state, "sonarr", config);
+  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  const seriesEpisodes = await mapConcurrent(input.seriesIds, EPISODE_LOAD_CONCURRENCY, async (seriesId) => {
+    const mediaItemId = state.repositories.mediaItems.findIdByArrId("series", seriesId, instanceId);
+    const episodes = await client.getEpisodes(seriesId, true);
+    return getNonFunEpisodeIds(episodes).map((episodeId) => ({ episodeId, mediaItemId, seriesId }));
+  });
+  const episodeTasks = seriesEpisodes.flat();
+  let candidatesFound = 0;
+
+  context.setProgressTotal(episodeTasks.length);
+  context.addEvent("info", `Searching ${episodeTasks.length} non-FuN episodes with concurrency ${SEARCH_CONCURRENCY}`);
+
+  await mapConcurrent(episodeTasks, SEARCH_CONCURRENCY, async (task) => {
+    try {
+      const releases = await client.getReleasesForEpisode(task.episodeId);
+      const candidate = selectBestFunRelease(releases);
+      if (candidate) {
+        state.repositories.releaseCandidates.insert({
+          instanceId,
+          mediaItemId: task.mediaItemId,
+          childArrId: task.episodeId,
+          release: candidate,
+          foundAt: new Date(),
+        });
+        candidatesFound += 1;
+      }
+      state.repositories.activityLog.insert({
+        action: "search",
+        quotaType: "search",
+        status: "success",
+        instanceId,
+        mediaItemId: task.mediaItemId,
+        childArrId: task.episodeId,
+        message: candidate ? "FuN* candidate found" : "No FuN* candidate",
+        createdAt: new Date(),
+      });
+      context.incrementProgress();
+    } catch (error) {
+      state.repositories.activityLog.insert({
+        action: "search",
+        quotaType: "search",
+        status: "failed",
+        instanceId,
+        mediaItemId: task.mediaItemId,
+        childArrId: task.episodeId,
+        message: error instanceof Error ? error.message : String(error),
+        createdAt: new Date(),
+      });
+      context.incrementProgress({ failed: true });
+    }
+  });
+  context.addEvent("info", `Stored ${candidatesFound} FuN* candidates`);
+}
+
+async function grabSonarrCandidates(state: IpcState, input: SonarrSeriesActionInput, context: JobContext): Promise<void> {
+  const config = state.instanceStore.getWithApiKey("sonarr");
+  const instanceId = upsertRuntimeInstance(state, "sonarr", config);
+  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  const candidates = state.repositories.releaseCandidates.listForSeriesIds(input.seriesIds);
+
+  context.setProgressTotal(candidates.length);
+  context.addEvent("info", `Grabbing ${candidates.length} stored FuN* candidates with concurrency ${GRAB_CONCURRENCY}`);
+
+  await mapConcurrent(candidates, GRAB_CONCURRENCY, async (candidate) => {
+    try {
+      await client.grabRelease(candidate.release);
+      state.repositories.releaseCandidates.delete(candidate.id);
+      state.repositories.activityLog.insert({
+        action: "grab",
+        quotaType: "grab",
+        status: "success",
+        instanceId,
+        mediaItemId: candidate.mediaItemId,
+        childArrId: candidate.childArrId,
+        message: candidate.release.title ?? "FuN* candidate grabbed",
+        createdAt: new Date(),
+      });
+      context.incrementProgress();
+    } catch (error) {
+      state.repositories.activityLog.insert({
+        action: "grab",
+        quotaType: "grab",
+        status: "failed",
+        instanceId,
+        mediaItemId: candidate.mediaItemId,
+        childArrId: candidate.childArrId,
+        message: error instanceof Error ? error.message : String(error),
+        createdAt: new Date(),
+      });
+      context.incrementProgress({ failed: true });
+    }
+  });
+}
+
+function upsertRuntimeInstance(
+  state: IpcState,
+  kind: InstanceKind,
+  config: { name: string; baseUrl: string; apiKey: string },
+): number {
+  return state.repositories.instances.upsert({
+    kind,
+    name: config.name,
+    baseUrl: config.baseUrl,
+    apiKeyEncrypted: "managed-by-instance-store",
+    enabled: true,
+    now: new Date(),
+  });
 }
 
 function assertInstanceInput(payload: unknown): InstanceConfigInput {
@@ -232,17 +360,25 @@ function assertSeriesActionInput(payload: unknown): SonarrSeriesActionInput {
   };
 }
 
-function formatDateTime(value: string): string {
+function formatDateTime(value: string | undefined): string {
+  if (!value || value === "-") return "-";
   const date = new Date(value);
   return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-async function waitForJobCompletion(jobRunner: JobRunner, jobId: string): Promise<void> {
-  for (let i = 0; i < 1200; i += 1) {
-    const job = jobRunner.listJobs().find((candidate) => candidate.id === jobId);
-    if (job?.status === "completed" || job?.status === "failed") {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
+function formatSonarrRowDates(row: ReturnType<IpcState["repositories"]["mediaItems"]["listSonarrRows"]>[number]) {
+  return {
+    ...row,
+    lastAnalyzed: formatDateTime(row.lastAnalyzed),
+    lastSearched: formatDateTime(row.lastSearched),
+    lastGrabbed: formatDateTime(row.lastGrabbed),
+  };
+}
+
+function formatActivityRow(row: ActivityRowView): ActivityRowView {
+  return {
+    ...row,
+    app: row.app === "sonarr" ? "Sonarr" : row.app === "radarr" ? "Radarr" : "External",
+    at: formatDateTime(row.at),
+  };
 }

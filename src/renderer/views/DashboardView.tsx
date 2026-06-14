@@ -1,63 +1,75 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
+import type { LucideIcon } from "lucide-react";
 import { Activity, CheckCircle2, Clock, Database, Download, HardDrive, Search, ShieldCheck } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
+import { getLibrarySummary, getQuotaSummary, getRecentActivity, listJobs, subscribeToJobEvents } from "../state/ipc-client";
+import type { ActivityRowView, JobView } from "../../shared/ipc-contracts";
 
-interface ActivityRow {
-  action: string;
-  app: "Sonarr" | "Radarr";
-  at: string;
-  item: string;
-  quota: string;
-  status: "success" | "failed" | "blocked" | "started";
-}
+type ActivityRow = ActivityRowView;
 
 interface ActiveJobRow {
   job: string;
   progress: string;
-  status: "running" | "queued" | "blocked";
+  status: "running" | "queued" | "blocked_by_budget" | "completed" | "failed" | "cancelled";
   target: string;
 }
 
-const kpis = [
-  { icon: Database, label: "Total series", value: "184", detail: "Sonarr library" },
-  { icon: Database, label: "Total movies", value: "2,411", detail: "Radarr library" },
-  { icon: HardDrive, label: "Total files", value: "18,940", detail: "222.4 TB" },
-  { icon: ShieldCheck, label: "FuN* files", value: "9,782", detail: "51.6% coverage" },
-  { icon: Download, label: "FuN* size share", value: "48.3%", detail: "of stored bytes" },
-  { icon: Search, label: "Search success", value: "72.4%", detail: "last 24h" },
-  { icon: CheckCircle2, label: "Grab success", value: "88.1%", detail: "last 24h" },
-  { icon: Clock, label: "Budget remaining", value: "1,583 / 339", detail: "search / grab" },
-];
-
-const recentActivity: ActivityRow[] = [
-  { action: "search", app: "Sonarr", at: "22:01:18", item: "Criminal Record S01E07", quota: "search", status: "success" },
-  { action: "grab", app: "Radarr", at: "21:58:44", item: "Nicht noch ein Teenie-Film", quota: "grab", status: "blocked" },
-  { action: "analysis", app: "Radarr", at: "21:53:11", item: "2,411 movies", quota: "none", status: "success" },
-  { action: "search", app: "Sonarr", at: "21:48:02", item: "Severance S02E01", quota: "search", status: "failed" },
-];
-
-const activeJobs: ActiveJobRow[] = [
-  { job: "Nightly FuN analysis", progress: "418 / 2,595", status: "running", target: "all" },
-  { job: "Selected movie search", progress: "0 / 34", status: "queued", target: "radarr" },
-  { job: "Grab stored candidates", progress: "61 / 400 budget used", status: "blocked", target: "all" },
-];
-
-const activityTone: Record<ActivityRow["status"], StatusTone> = {
-  blocked: "warning",
+const activityTone: Record<string, StatusTone> = {
+  blocked_by_budget: "warning",
   failed: "danger",
+  skipped: "muted",
   started: "running",
   success: "success",
 };
 
 const jobTone: Record<ActiveJobRow["status"], StatusTone> = {
-  blocked: "warning",
+  blocked_by_budget: "warning",
+  cancelled: "muted",
+  completed: "success",
+  failed: "danger",
   queued: "idle",
   running: "running",
 };
 
 export function DashboardView() {
+  const [kpis, setKpis] = useState<Array<{ icon: LucideIcon; label: string; value: string; detail: string }>>([]);
+  const [recentActivity, setRecentActivity] = useState<ActivityRow[]>([]);
+  const [activeJobs, setActiveJobs] = useState<ActiveJobRow[]>([]);
+
+  useEffect(() => {
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 5_000);
+    const unsubscribe = subscribeToJobEvents(() => void refresh());
+    return () => {
+      window.clearInterval(interval);
+      unsubscribe();
+    };
+  }, []);
+
+  async function refresh() {
+    const [summary, quota, activityRows, jobs] = await Promise.all([getLibrarySummary(), getQuotaSummary(), getRecentActivity(), listJobs()]);
+    const activeJobRows: ActiveJobRow[] = [];
+    for (const job of jobs) {
+      if (job.status === "running" || job.status === "queued" || job.status === "blocked_by_budget") {
+        activeJobRows.push(toActiveJobRow(job));
+      }
+    }
+    setRecentActivity(activityRows);
+    setActiveJobs(activeJobRows);
+    setKpis([
+      { icon: Database, label: "Total series", value: String(summary.totalSeries), detail: "Sonarr library" },
+      { icon: Database, label: "Total movies", value: String(summary.totalMovies), detail: "Radarr library" },
+      { icon: HardDrive, label: "Total files", value: String(summary.totalFiles), detail: formatBytes(summary.totalSizeBytes) },
+      { icon: ShieldCheck, label: "FuN* files", value: String(summary.funFiles), detail: `${Math.round(summary.funShare * 100)}% coverage` },
+      { icon: Download, label: "FuN* size share", value: `${Math.round(summary.funShare * 100)}%`, detail: "of files" },
+      { icon: Search, label: "Search budget", value: String(quota.search.remaining), detail: `${quota.search.used} used / ${quota.search.limit}` },
+      { icon: CheckCircle2, label: "Grab budget", value: String(quota.grab.remaining), detail: `${quota.grab.used} used / ${quota.grab.limit}` },
+      { icon: Clock, label: "Active jobs", value: String(jobs.filter((job) => job.status === "running").length), detail: `${jobs.filter((job) => job.status === "queued").length} queued` },
+    ]);
+  }
+
   const activityColumns = useMemo<Array<ColumnDef<ActivityRow, unknown>>>(
     () => [
       { accessorKey: "at", cell: ({ getValue }) => <Mono>{getValue<string>()}</Mono>, header: "Time", size: 96 },
@@ -69,7 +81,7 @@ export function DashboardView() {
         accessorKey: "status",
         cell: ({ getValue }) => {
           const status = getValue<ActivityRow["status"]>();
-          return <StatusPill tone={activityTone[status]}>{status}</StatusPill>;
+          return <StatusPill tone={activityTone[status] ?? "idle"}>{status}</StatusPill>;
         },
         header: "Status",
         size: 112,
@@ -123,4 +135,19 @@ export function DashboardView() {
 
 function Mono({ children }: { children: string }) {
   return <span className="font-mono tabular-nums text-ink-200">{children}</span>;
+}
+
+function toActiveJobRow(job: JobView): ActiveJobRow {
+  return {
+    job: job.name,
+    progress: `${job.progressCurrent} / ${job.progressTotal}`,
+    status: job.status,
+    target: job.target,
+  };
+}
+
+function formatBytes(value: number) {
+  if (value === 0) return "0 GB";
+  if (value >= 1_000_000_000_000) return `${(value / 1_000_000_000_000).toFixed(1)} TB`;
+  return `${(value / 1_000_000_000).toFixed(1)} GB`;
 }

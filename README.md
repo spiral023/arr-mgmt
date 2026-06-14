@@ -97,6 +97,46 @@ npm run build        # TypeScript + electron-vite Build
 npm run dist:win     # Portable Windows EXE bauen
 ```
 
+## Windows-EXE erstellen
+
+Die App wird als portable Windows-EXE mit `electron-builder` gebaut. Voraussetzung ist ein installiertes Node.js/npm-Setup und installierte Dependencies:
+
+```powershell
+npm install
+```
+
+Vor einem Release-Build lokal pruefen:
+
+```powershell
+npm run lint
+npm test
+```
+
+Neue portable EXE bauen:
+
+```powershell
+npm run dist:win
+```
+
+Der Standard-Build schreibt nach `release` und erzeugt:
+
+```text
+release\ARR Ops 0.1.0.exe
+```
+
+Wenn Windows eine alte Ausgabe sperrt, z. B. weil die App noch laeuft oder ein Explorer-Fenster Dateien haelt, App schliessen und den Build erneut starten. Alternativ kann ein anderer Output-Ordner genutzt werden:
+
+```powershell
+npm run build
+npx electron-builder --win portable --x64 --config.directories.output=release-fixed
+```
+
+Die EXE liegt dann z. B. unter:
+
+```text
+release-fixed\ARR Ops 0.1.0.exe
+```
+
 Gepackte Electron-App gegen IPC und Live-Sonarr testen:
 
 ```powershell

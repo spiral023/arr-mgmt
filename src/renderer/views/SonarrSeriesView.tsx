@@ -11,77 +11,6 @@ type SeriesStatus = "ready" | "searchable" | "cooldown" | "failed";
 
 type SonarrSeriesRow = SonarrSeriesTableRow;
 
-const rows: SonarrSeriesRow[] = [
-  {
-    arrId: 1,
-    episodes: 16,
-    files: 16,
-    funFiles: 8,
-    funShare: 0.5,
-    hasFiles: true,
-    id: "series-1",
-    lastAnalyzed: "2026-06-13 21:58",
-    lastGrabbed: "2026-06-12 23:41",
-    lastSearched: "2026-06-13 20:18",
-    monitored: true,
-    nonFunFiles: 8,
-    status: "searchable",
-    title: "Criminal Record",
-    totalSizeBytes: 28_400_000_000,
-  },
-  {
-    arrId: 2,
-    episodes: 80,
-    files: 80,
-    funFiles: 80,
-    funShare: 1,
-    hasFiles: true,
-    id: "series-2",
-    lastAnalyzed: "2026-06-13 21:50",
-    lastGrabbed: "2026-06-13 06:24",
-    lastSearched: "2026-06-13 06:05",
-    monitored: true,
-    nonFunFiles: 0,
-    status: "cooldown",
-    title: "Slow Horses",
-    totalSizeBytes: 142_700_000_000,
-  },
-  {
-    arrId: 3,
-    episodes: 10,
-    files: 7,
-    funFiles: 1,
-    funShare: 0.14,
-    hasFiles: true,
-    id: "series-3",
-    lastAnalyzed: "2026-06-13 19:07",
-    lastGrabbed: "-",
-    lastSearched: "2026-06-13 19:08",
-    monitored: true,
-    nonFunFiles: 6,
-    status: "failed",
-    title: "Severance",
-    totalSizeBytes: 61_300_000_000,
-  },
-  {
-    arrId: 4,
-    episodes: 24,
-    files: 0,
-    funFiles: 0,
-    funShare: 0,
-    hasFiles: false,
-    id: "series-4",
-    lastAnalyzed: "2026-06-12 23:11",
-    lastGrabbed: "-",
-    lastSearched: "-",
-    monitored: false,
-    nonFunFiles: 0,
-    status: "ready",
-    title: "Archive Hold",
-    totalSizeBytes: 0,
-  },
-];
-
 const statusTone: Record<SeriesStatus, StatusTone> = {
   cooldown: "warning",
   failed: "danger",
@@ -93,6 +22,7 @@ export function SonarrSeriesView({
   analyzing = false,
   onAnalyze,
   onGrab,
+  onOpenInSonarr,
   onSearch,
   rows: liveRows,
   statusMessage = "Ready",
@@ -100,12 +30,14 @@ export function SonarrSeriesView({
   analyzing?: boolean;
   onAnalyze?: () => void;
   onGrab?: (seriesIds: number[]) => void;
+  onOpenInSonarr?: (seriesId: number) => void;
   onSearch?: (seriesIds: number[]) => void;
   rows?: SonarrSeriesTableRow[];
   statusMessage?: string;
 }) {
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
-  const resolvedRows = liveRows && liveRows.length > 0 ? liveRows : rows;
+  const [detailsRow, setDetailsRow] = useState<SonarrSeriesRow | null>(null);
+  const resolvedRows = liveRows ?? [];
   const filterControls = useMemo(
     () => <SonarrFilters columnFilters={columnFilters} onColumnFiltersChange={setColumnFilters} />,
     [columnFilters],
@@ -203,8 +135,8 @@ export function SonarrSeriesView({
       {
         cell: ({ row }) => (
           <div className="flex gap-2">
-            <IconButton className="px-0" icon={Eye} label={`Open details for ${row.original.title}`} />
-            <IconButton className="px-0" icon={ExternalLink} label={`Open ${row.original.title} in Sonarr`} />
+            <IconButton className="px-0" icon={Eye} label={`Open details for ${row.original.title}`} onClick={() => setDetailsRow(row.original)} />
+            <IconButton className="px-0" icon={ExternalLink} label={`Open ${row.original.title} in Sonarr`} onClick={() => onOpenInSonarr?.(row.original.arrId)} />
           </div>
         ),
         enableSorting: false,
@@ -213,7 +145,7 @@ export function SonarrSeriesView({
         size: 112,
       },
     ],
-    [],
+    [onOpenInSonarr],
   );
 
   return (
@@ -262,6 +194,34 @@ export function SonarrSeriesView({
         searchPlaceholder="Search series"
         title="Sonarr Series"
       />
+      {detailsRow ? (
+        <section className="rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-white">{detailsRow.title}</h2>
+              <p className="mt-1 text-sm text-ink-400">
+                {detailsRow.files} files across {detailsRow.episodes} episodes, {detailsRow.nonFunFiles} non-FuN files, last analyzed {detailsRow.lastAnalyzed}.
+              </p>
+            </div>
+            <StatusPill tone={statusTone[detailsRow.status]}>{detailsRow.status}</StatusPill>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Detail label="FuN* share" value={formatPercent(detailsRow.funShare)} />
+            <Detail label="Total size" value={formatBytes(detailsRow.totalSizeBytes)} />
+            <Detail label="Last searched" value={detailsRow.lastSearched} />
+            <Detail label="Last grabbed" value={detailsRow.lastGrabbed} />
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-white/10 bg-ink-950/60 px-3 py-2">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-400">{label}</div>
+      <div className="mt-1 font-mono text-sm text-ink-200">{value}</div>
     </div>
   );
 }

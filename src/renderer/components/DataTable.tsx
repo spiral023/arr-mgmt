@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type {
   ColumnDef,
   ColumnFiltersState,
@@ -72,6 +72,7 @@ export function DataTable<TData extends object>({
   const [internalGlobalFilter, setInternalGlobalFilter] = useState(initialGlobalFilter);
   const [internalRowSelection, setInternalRowSelection] = useState<RowSelectionState>({});
   const [internalSorting, setInternalSorting] = useState<SortingState>(initialSorting);
+  const lastRangeRowIdRef = useRef<string | null>(null);
 
   const resolvedColumnFilters = columnFilters ?? internalColumnFilters;
   const resolvedGlobalFilter = globalFilter ?? internalGlobalFilter;
@@ -123,6 +124,50 @@ export function DataTable<TData extends object>({
     return `${count} selected`;
   }, [selectedRows.length]);
 
+  function handleTableSelectionClick(event: React.MouseEvent<HTMLTableElement>) {
+    if (!isCheckboxClick(event.target)) {
+      return;
+    }
+
+    const rowId = event.target.closest("tr")?.dataset.rowId;
+    const row = rowId ? table.getRowModel().rows.find((candidate) => candidate.id === rowId) : undefined;
+    if (!row) {
+      return;
+    }
+
+    if (!event.shiftKey || !lastRangeRowIdRef.current) {
+      lastRangeRowIdRef.current = row.id;
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const visibleRows = table.getRowModel().rows;
+    const previousIndex = visibleRows.findIndex((candidate) => candidate.id === lastRangeRowIdRef.current);
+    const currentIndex = visibleRows.findIndex((candidate) => candidate.id === row.id);
+    if (previousIndex < 0 || currentIndex < 0) {
+      lastRangeRowIdRef.current = row.id;
+      return;
+    }
+
+    const [start, end] = previousIndex < currentIndex ? [previousIndex, currentIndex] : [currentIndex, previousIndex];
+    const shouldSelectRange = event.target.checked;
+
+    handleRowSelectionChange((current) => {
+      const next = { ...current };
+      for (const rangeRow of visibleRows.slice(start, end + 1)) {
+        if (shouldSelectRange) {
+          next[rangeRow.id] = true;
+        } else {
+          delete next[rangeRow.id];
+        }
+      }
+      return next;
+    });
+    lastRangeRowIdRef.current = row.id;
+  }
+
   return (
     <section className="overflow-hidden rounded-lg border border-white/10 bg-ink-900/80 shadow-surface">
       <div className="border-b border-white/10 bg-ink-900/95 px-4 py-3">
@@ -156,7 +201,7 @@ export function DataTable<TData extends object>({
       ) : null}
 
       <div className="max-h-[64vh] overflow-auto">
-        <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
+        <table className="min-w-full border-separate border-spacing-0 text-left text-sm" onClickCapture={handleTableSelectionClick}>
           <thead className="sticky top-0 z-10 bg-ink-850 shadow-[0_1px_0_rgba(255,255,255,0.10)]">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
@@ -201,6 +246,7 @@ export function DataTable<TData extends object>({
                 <tr
                   className="border-b border-white/5 bg-ink-900/70 transition-[background-color] duration-150 ease-out hover:bg-white/[0.035] data-[selected=true]:bg-signal-cyan/10"
                   data-selected={row.getIsSelected()}
+                  data-row-id={row.id}
                   key={row.id}
                 >
                   {row.getVisibleCells().map((cell) => (
@@ -223,6 +269,12 @@ export function DataTable<TData extends object>({
     </section>
   );
 }
+
+function isCheckboxClick(target: EventTarget): target is HTMLInputElement {
+  const element = target as Partial<HTMLInputElement> | null;
+  return element?.type === "checkbox" && typeof element.checked === "boolean";
+}
+
 
 function useControlledChange<TValue>(
   currentValue: TValue,

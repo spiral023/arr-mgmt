@@ -1,8 +1,13 @@
 import type {
+  ActivityRowView,
   InstanceConfigInput,
   InstanceConfigView,
   InstanceTestResult,
   IpcChannel,
+  JobEventView,
+  JobView,
+  LibrarySummary,
+  QuotaSummary,
   SonarrActionResult,
   SonarrSeriesTableRow,
   SonarrSeriesActionInput,
@@ -31,8 +36,28 @@ export function analyzeSonarr(): Promise<unknown> {
   return invokeIpc("jobs:enqueue", { name: "Analyze Sonarr", target: "sonarr" });
 }
 
+export function getLibrarySummary(): Promise<LibrarySummary> {
+  return invokeIpc<LibrarySummary>("library:summary");
+}
+
 export function getSonarrRows(): Promise<SonarrSeriesTableRow[]> {
   return invokeIpc<SonarrSeriesTableRow[]>("library:sonarr");
+}
+
+export function listJobs(): Promise<JobView[]> {
+  return invokeIpc<JobView[]>("jobs:list");
+}
+
+export function listJobEvents(jobId?: string): Promise<JobEventView[]> {
+  return invokeIpc<JobEventView[]>("jobs:events", jobId ? { jobId } : undefined);
+}
+
+export function getQuotaSummary(): Promise<QuotaSummary> {
+  return invokeIpc<QuotaSummary>("quota:summary");
+}
+
+export function getRecentActivity(): Promise<ActivityRowView[]> {
+  return invokeIpc<ActivityRowView[]>("activity:recent");
 }
 
 export function searchSonarrSeries(seriesIds: number[]): Promise<SonarrActionResult> {
@@ -41,6 +66,17 @@ export function searchSonarrSeries(seriesIds: number[]): Promise<SonarrActionRes
 
 export function grabSonarrSeries(seriesIds: number[]): Promise<SonarrActionResult> {
   return invokeIpc<SonarrActionResult>("sonarr:grab", { seriesIds } satisfies SonarrSeriesActionInput);
+}
+
+export function openSonarrSeries(seriesId: number): Promise<{ ok: boolean }> {
+  return invokeIpc<{ ok: boolean }>("sonarr:openSeries", { seriesId });
+}
+
+export function subscribeToJobEvents(callback: (payload: unknown) => void): () => void {
+  if (!window.arrOps) {
+    return () => undefined;
+  }
+  return window.arrOps.onJobEvent(callback);
 }
 
 function getBrowserFallback<T>(channel: IpcChannel): T {
@@ -55,6 +91,18 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
   }
   if (channel === "library:sonarr") {
     return [] as T;
+  }
+  if (channel === "jobs:list" || channel === "jobs:events" || channel === "activity:recent") {
+    return [] as T;
+  }
+  if (channel === "library:summary") {
+    return { totalSeries: 0, totalMovies: 0, totalFiles: 0, totalSizeBytes: 0, funFiles: 0, funShare: 0 } as T;
+  }
+  if (channel === "quota:summary") {
+    return {
+      search: { used: 0, remaining: 2000, limit: 2000 },
+      grab: { used: 0, remaining: 400, limit: 400 },
+    } as T;
   }
   return {} as T;
 }

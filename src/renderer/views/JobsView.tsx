@@ -1,11 +1,11 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Ban, ChevronDown, Pause, Play } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
-
-type JobStatus = "running" | "queued" | "completed" | "failed" | "blocked";
+import { listJobEvents, listJobs, subscribeToJobEvents } from "../state/ipc-client";
+import type { JobEventView, JobStatus, JobView } from "../../shared/ipc-contracts";
 
 interface JobRow {
   actions: string;
@@ -22,78 +22,9 @@ interface JobRow {
   target: string;
 }
 
-const jobs: JobRow[] = [
-  {
-    actions: "analysis, search",
-    duration: "00:18:42",
-    failure: 2,
-    finished: "-",
-    id: "job-1",
-    job: "Nightly FuN analysis",
-    progressCurrent: 418,
-    progressTotal: 2595,
-    started: "2026-06-13 21:42",
-    status: "running",
-    success: 416,
-    target: "all",
-  },
-  {
-    actions: "search",
-    duration: "-",
-    failure: 0,
-    finished: "-",
-    id: "job-2",
-    job: "Selected movie search",
-    progressCurrent: 0,
-    progressTotal: 34,
-    started: "-",
-    status: "queued",
-    success: 0,
-    target: "radarr",
-  },
-  {
-    actions: "grab",
-    duration: "00:00:03",
-    failure: 0,
-    finished: "2026-06-13 21:58",
-    id: "job-3",
-    job: "Grab stored candidates",
-    progressCurrent: 0,
-    progressTotal: 12,
-    started: "2026-06-13 21:58",
-    status: "blocked",
-    success: 0,
-    target: "all",
-  },
-  {
-    actions: "analysis",
-    duration: "00:09:18",
-    failure: 0,
-    finished: "2026-06-13 20:36",
-    id: "job-4",
-    job: "Radarr refresh",
-    progressCurrent: 2411,
-    progressTotal: 2411,
-    started: "2026-06-13 20:27",
-    status: "completed",
-    success: 2411,
-    target: "radarr",
-  },
-];
-
-const events: Record<string, Array<{ at: string; level: "info" | "warning" | "error"; message: string }>> = {
-  "job-1": [
-    { at: "21:42:09", level: "info", message: "Started combined analysis and search for all enabled instances." },
-    { at: "21:56:44", level: "warning", message: "Skipped 13 Sonarr episodes due to search cooldown." },
-    { at: "22:00:51", level: "info", message: "Stored 41 FuN* release candidates." },
-  ],
-  "job-2": [{ at: "21:59:12", level: "info", message: "Queued behind active combined job." }],
-  "job-3": [{ at: "21:58:44", level: "warning", message: "Grab budget has 339 remaining but selected batch needs 401." }],
-  "job-4": [{ at: "20:36:43", level: "info", message: "Completed Radarr analysis for 2,411 movies." }],
-};
-
 const statusTone: Record<JobStatus, StatusTone> = {
-  blocked: "warning",
+  blocked_by_budget: "warning",
+  cancelled: "muted",
   completed: "success",
   failed: "danger",
   queued: "idle",
@@ -101,7 +32,44 @@ const statusTone: Record<JobStatus, StatusTone> = {
 };
 
 export function JobsView() {
-  const [expandedJobId, setExpandedJobId] = useState("job-1");
+  const [jobs, setJobs] = useState<JobRow[]>([]);
+  const [events, setEvents] = useState<JobEventView[]>([]);
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+  const expandedJobIdRef = useRef<string | null>(null);
+
+  const refreshEvents = useCallback(async (jobId: string) => {
+    setEvents(await listJobEvents(jobId));
+  }, []);
+
+  const refreshJobs = useCallback(async () => {
+    const nextJobs = (await listJobs()).map(toJobRow);
+    setJobs(nextJobs);
+    const activeJobId = expandedJobIdRef.current ?? nextJobs[0]?.id ?? null;
+    if (activeJobId) {
+      expandedJobIdRef.current = activeJobId;
+      setExpandedJobId(activeJobId);
+      await refreshEvents(activeJobId);
+    }
+  }, [refreshEvents]);
+
+  const selectJob = useCallback(
+    (jobId: string) => {
+      expandedJobIdRef.current = jobId;
+      setExpandedJobId(jobId);
+      void refreshEvents(jobId);
+    },
+    [refreshEvents],
+  );
+
+  useEffect(() => {
+    void refreshJobs();
+    const interval = window.setInterval(() => void refreshJobs(), 2_000);
+    const unsubscribe = subscribeToJobEvents(() => void refreshJobs());
+    return () => {
+      window.clearInterval(interval);
+      unsubscribe();
+    };
+  }, [refreshJobs]);
 
   const columns = useMemo<Array<ColumnDef<JobRow, unknown>>>(
     () => [
@@ -136,7 +104,7 @@ export function JobsView() {
       {
         cell: ({ row }) => (
           <div className="flex gap-2">
-            <IconButton className="px-0" icon={ChevronDown} label={`Show events for ${row.original.job}`} onClick={() => setExpandedJobId(row.original.id)} />
+            <IconButton className="px-0" icon={ChevronDown} label={`Show events for ${row.original.job}`} onClick={() => selectJob(row.original.id)} />
             <IconButton className="px-0" icon={row.original.status === "queued" ? Play : Pause} label={`Toggle ${row.original.job}`} />
             <IconButton className="px-0" icon={Ban} label={`Cancel ${row.original.job}`} tone="danger" />
           </div>
@@ -147,11 +115,11 @@ export function JobsView() {
         size: 152,
       },
     ],
-    [],
+    [selectJob],
   );
 
-  const activeEvents = events[expandedJobId] ?? [];
-  const activeJob = jobs.find((job) => job.id === expandedJobId);
+  const activeEvents = events;
+  const activeJob = expandedJobId ? jobs.find((job) => job.id === expandedJobId) : undefined;
 
   return (
     <div className="flex flex-col gap-4">
@@ -167,8 +135,8 @@ export function JobsView() {
         </div>
         <div className="mt-4 divide-y divide-white/10 rounded-md border border-white/10 bg-ink-950/60">
           {activeEvents.map((event) => (
-            <div className="grid gap-2 px-3 py-3 text-sm md:grid-cols-[6rem_6rem_1fr]" key={`${event.at}-${event.message}`}>
-              <Mono>{event.at}</Mono>
+            <div className="grid gap-2 px-3 py-3 text-sm md:grid-cols-[10rem_6rem_1fr]" key={`${event.createdAt}-${event.message}`}>
+              <Mono>{formatDateTime(event.createdAt)}</Mono>
               <StatusPill tone={event.level === "error" ? "danger" : event.level === "warning" ? "warning" : "idle"}>{event.level}</StatusPill>
               <span className="text-ink-200">{event.message}</span>
             </div>
@@ -177,6 +145,23 @@ export function JobsView() {
       </section>
     </div>
   );
+}
+
+function toJobRow(job: JobView): JobRow {
+  return {
+    actions: job.kind,
+    duration: formatDuration(job.startedAt, job.finishedAt),
+    failure: job.failureCount,
+    finished: formatDateTime(job.finishedAt),
+    id: job.id,
+    job: job.name,
+    progressCurrent: job.progressCurrent,
+    progressTotal: job.progressTotal,
+    started: formatDateTime(job.startedAt),
+    status: job.status,
+    success: job.successCount,
+    target: job.target,
+  };
 }
 
 function Progress({ current, total }: { current: number; total: number }) {
@@ -198,4 +183,20 @@ function Progress({ current, total }: { current: number; total: number }) {
 
 function Mono({ children }: { children: string }) {
   return <span className="font-mono tabular-nums text-ink-200">{children}</span>;
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return "-";
+  const date = new Date(value);
+  return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function formatDuration(startedAt?: string, finishedAt?: string) {
+  if (!startedAt) return "-";
+  const start = new Date(startedAt).getTime();
+  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = seconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(restSeconds).padStart(2, "0")}`;
 }
