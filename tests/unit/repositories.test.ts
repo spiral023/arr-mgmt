@@ -279,6 +279,66 @@ describe("repositories", () => {
       }),
     ]);
   });
+
+  it("records performance samples and summarizes them per job", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+
+    repos.perfSamples.insert({
+      jobId: "job-1",
+      app: "sonarr",
+      phase: "grab",
+      operation: "grab_post",
+      childArrId: 101,
+      strategy: "guid",
+      outcome: "success",
+      durationMs: 120.4,
+      createdAt: new Date("2026-06-14T10:00:00.000Z"),
+    });
+    repos.perfSamples.insert({
+      jobId: "job-1",
+      app: "sonarr",
+      phase: "grab",
+      operation: "grab_post",
+      childArrId: 102,
+      strategy: "guid",
+      outcome: "success",
+      durationMs: 80.6,
+      createdAt: new Date("2026-06-14T10:00:01.000Z"),
+    });
+    repos.perfSamples.insert({
+      jobId: "job-1",
+      app: "sonarr",
+      phase: "grab",
+      operation: "season_refetch",
+      childArrId: 103,
+      outcome: "success",
+      durationMs: 5_000,
+      createdAt: new Date("2026-06-14T10:00:02.000Z"),
+    });
+    repos.perfSamples.insert({
+      jobId: "job-2",
+      app: "radarr",
+      phase: "grab",
+      operation: "grab_post",
+      childArrId: 201,
+      strategy: "guid",
+      outcome: "success",
+      durationMs: 999,
+      createdAt: new Date("2026-06-14T11:00:00.000Z"),
+    });
+
+    expect(repos.perfSamples.summarizeForJob("job-1")).toEqual([
+      { operation: "grab_post", outcome: "success", count: 2, avgMs: 101, minMs: 81, maxMs: 120 },
+      { operation: "season_refetch", outcome: "success", count: 1, avgMs: 5_000, minMs: 5_000, maxMs: 5_000 },
+    ]);
+    expect(repos.perfSamples.summarizeByPhase("grab")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ operation: "grab_post", outcome: "success", count: 3 }),
+      ]),
+    );
+  });
 });
 
 function analysis(): MediaItemAnalysis {

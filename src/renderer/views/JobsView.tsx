@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Ban, ChevronDown } from "lucide-react";
+import { Ban, Check, ChevronDown, Copy } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
@@ -36,6 +36,8 @@ export function JobsView() {
   const [jobs, setJobs] = useState<JobRow[]>([]);
   const [events, setEvents] = useState<JobEventView[]>([]);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [copyMenuOpen, setCopyMenuOpen] = useState(false);
   const expandedJobIdRef = useRef<string | null>(null);
 
   const refreshEvents = useCallback(async (jobId: string) => {
@@ -141,6 +143,21 @@ export function JobsView() {
   const activeEvents = events;
   const activeJob = expandedJobId ? jobs.find((job) => job.id === expandedJobId) : undefined;
 
+  const copy = async (mode: "full" | "ai") => {
+    setCopyMenuOpen(false);
+    if (activeEvents.length === 0) {
+      return;
+    }
+    const text = mode === "ai" ? buildAiLog(activeEvents, activeJob) : buildFullLog(activeEvents, activeJob);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      // Clipboard may be unavailable; fail silently rather than breaking the view.
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4">
       <DataTable columns={columns} data={jobs} getRowId={(row) => row.id} initialSorting={[{ id: "started", desc: true }]} searchPlaceholder="Filter jobs" title="Jobs" />
@@ -151,7 +168,47 @@ export function JobsView() {
             <h2 className="text-base font-semibold text-white">Job Events</h2>
             <p className="mt-1 text-sm text-ink-400">{activeJob ? activeJob.job : "Select a job"} event stream</p>
           </div>
-          {activeJob ? <StatusPill tone={statusTone[activeJob.status]}>{activeJob.status}</StatusPill> : null}
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <IconButton
+                aria-expanded={copyMenuOpen}
+                disabled={activeEvents.length === 0}
+                icon={copied ? Check : Copy}
+                label="Copy job log to clipboard"
+                onClick={() => setCopyMenuOpen((open) => !open)}
+                tone={copied ? "success" : "default"}
+              >
+                <span className="flex items-center gap-1">
+                  {copied ? "Copied" : "Copy log"}
+                  <ChevronDown aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2} />
+                </span>
+              </IconButton>
+              {copyMenuOpen ? (
+                <>
+                  <button
+                    aria-label="Close copy menu"
+                    className="fixed inset-0 z-10 cursor-default"
+                    onClick={() => setCopyMenuOpen(false)}
+                    tabIndex={-1}
+                    type="button"
+                  />
+                  <div className="absolute right-0 z-20 mt-1 w-64 overflow-hidden rounded-md border border-white/10 bg-ink-900 shadow-card">
+                    <CopyOption
+                      description="Every event, tab-separated"
+                      label="Full log"
+                      onClick={() => void copy("full")}
+                    />
+                    <CopyOption
+                      description="Compressed: warnings, key events & collapsed repeats"
+                      label="Compressed for AI"
+                      onClick={() => void copy("ai")}
+                    />
+                  </div>
+                </>
+              ) : null}
+            </div>
+            {activeJob ? <StatusPill tone={statusTone[activeJob.status]}>{activeJob.status}</StatusPill> : null}
+          </div>
         </div>
         <div className="mt-4 divide-y divide-white/10 rounded-md border border-white/10 bg-ink-950/60">
           {activeEvents.map((event) => (
@@ -207,6 +264,73 @@ function Progress({ current, total }: { current: number; total: number }) {
 
 function Mono({ children }: { children: string }) {
   return <span className="font-mono tabular-nums text-ink-200">{children}</span>;
+}
+
+function CopyOption({ description, label, onClick }: { description: string; label: string; onClick: () => void }) {
+  return (
+    <button
+      className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm text-ink-200 transition-colors hover:bg-white/[0.06] hover:text-white"
+      onClick={onClick}
+      type="button"
+    >
+      <span className="font-medium">{label}</span>
+      <span className="text-xs text-ink-400">{description}</span>
+    </button>
+  );
+}
+
+function buildJobHeader(job?: JobRow): string {
+  return job
+    ? `# ${job.job} (${job.status}) — ${job.actions}/${job.target}, ${job.success} ok / ${job.failure} failed, duration ${job.duration}`
+    : "# Job log";
+}
+
+function buildFullLog(events: JobEventView[], job?: JobRow): string {
+  const lines = events.map((event) => `${formatDateTime(event.createdAt)}\t${event.level.toUpperCase()}\t${event.message}`);
+  return [buildJobHeader(job), ...lines].join("\n");
+}
+
+/** Replaces volatile parts of a message (titles, ids, urls, numbers) so repeated lines collapse by shape. */
+function normalizeMessage(message: string): string {
+  return message
+    .replace(/"[^"]*"/g, '"…"')
+    .replace(/https?:\/\/\S+/g, "<url>")
+    .replace(/\b[0-9a-f]{16,}\b/gi, "<hash>")
+    .replace(/-?\d+(?:\.\d+)?/g, "<n>");
+}
+
+/**
+ * Builds a token-frugal log for AI analysis: the job header, all warnings/errors verbatim, the key
+ * unique events (start/completed/performance/pre-fetch), and the remaining repetitive info lines
+ * collapsed into "N× <shape>" buckets. Turns hundreds of near-identical lines into a handful.
+ */
+function buildAiLog(events: JobEventView[], job?: JobRow): string {
+  const nonInfo = events.filter((event) => event.level !== "info");
+  const infos = events.filter((event) => event.level === "info");
+  const isKeyEvent = (message: string) => /performance|completed|started|pre-fetch/i.test(message);
+  const keyInfos = infos.filter((event) => isKeyEvent(event.message));
+  const collapsible = infos.filter((event) => !isKeyEvent(event.message));
+
+  const counts = new Map<string, number>();
+  for (const event of collapsible) {
+    const key = normalizeMessage(event.message);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const histogram = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([shape, count]) => `${count}× ${shape}`);
+
+  const sections: string[] = [buildJobHeader(job)];
+  if (nonInfo.length > 0) {
+    sections.push("", "## Warnings & errors (verbatim)", ...nonInfo.map((event) => `${event.level.toUpperCase()}\t${event.message}`));
+  }
+  if (keyInfos.length > 0) {
+    sections.push("", "## Key events (verbatim)", ...keyInfos.map((event) => event.message));
+  }
+  if (histogram.length > 0) {
+    sections.push("", "## Repeated info (collapsed by shape)", ...histogram);
+  }
+  const emitted = nonInfo.length + keyInfos.length + histogram.length;
+  sections.push("", `(${events.length} events compressed to ${emitted} lines)`);
+  return sections.join("\n");
 }
 
 function formatDateTime(value?: string) {

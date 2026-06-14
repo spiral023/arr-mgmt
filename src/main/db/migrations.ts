@@ -130,11 +130,26 @@ const statements = [
     created_at text not null,
     updated_at text not null
   )`,
+  `create table if not exists perf_samples (
+    id integer primary key autoincrement,
+    job_id text,
+    app text,
+    phase text not null,
+    operation text not null,
+    child_arr_id integer,
+    strategy text,
+    outcome text not null,
+    duration_ms integer not null,
+    detail text,
+    created_at text not null
+  )`,
   "create index if not exists idx_activity_log_quota_created on activity_log(quota_type, created_at)",
   "create index if not exists idx_activity_log_media_action_created on activity_log(media_item_id, action, created_at)",
   "create index if not exists idx_activity_log_action_created on activity_log(action, created_at)",
   "create index if not exists idx_media_items_instance_kind on media_items(instance_id, kind)",
   "create index if not exists idx_release_candidates_media on release_candidates(media_item_id, child_arr_id)",
+  "create index if not exists idx_perf_samples_phase_op on perf_samples(phase, operation, created_at)",
+  "create index if not exists idx_perf_samples_job on perf_samples(job_id)",
 ];
 
 export function migrateDatabase(db: AppDatabase): void {

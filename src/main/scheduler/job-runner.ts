@@ -32,6 +32,7 @@ export type JobRunnerChange = {
 };
 
 export type JobContext = {
+  jobId: string;
   addEvent: (level: JobEvent["level"], message: string) => void;
   incrementProgress: (options?: { failed?: boolean }) => void;
   isCancelled: () => boolean;
@@ -150,6 +151,7 @@ export class JobRunner {
     this.addEvent(job, "info", `${job.name} started`);
 
     const context: JobContext = {
+      jobId: job.id,
       addEvent: (level, message) => this.addEvent(job, level, message),
       incrementProgress: (options) => {
         if (job.status === "cancelled") {

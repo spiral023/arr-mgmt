@@ -5,7 +5,9 @@ import { selectSonarrSeriesForAnalysis } from "./arr/sonarr-analysis-plan";
 import { SonarrClient } from "./arr/sonarr-client";
 import { getNonFunEpisodeIds, getNonFunMovieIds, selectBestFunRelease } from "./arr/sonarr-operations";
 import type { ArrRelease } from "./arr/arr-types";
+import type { PerfSampleInsert } from "./db/schema";
 import { mapConcurrent } from "./async/map-concurrent";
+import { mapAdaptive, type AdaptivePoolResult } from "./async/adaptive-pool";
 import { isFunReleaseGroup } from "../shared/fun";
 import type { createRepositories } from "./db/repositories";
 import type { InstanceStore } from "./instances/instance-store";
@@ -48,7 +50,14 @@ const RADARR_ANALYSIS_CONCURRENCY = 1;
 const RADARR_ANALYSIS_YIELD_EVERY = 5;
 const EPISODE_LOAD_CONCURRENCY = 8;
 const SEARCH_CONCURRENCY = 12;
-const GRAB_CONCURRENCY = 4;
+// Grabs are now indexer-bound on the grab POST itself (Sonarr fetching the .nzb), not on a
+// per-episode search, so we push parallelism high to start. If the indexer throttles (429/503/
+// timeouts) the pool downshifts to GRAB_SAFE_CONCURRENCY for the rest of the run — see mapAdaptive.
+const GRAB_CONCURRENCY = 16;
+const GRAB_SAFE_CONCURRENCY = 6;
+// Season pre-fetch issues heavy interactive-search queries; keep these modest regardless of how
+// high the grab POST concurrency goes.
+const SEASON_PREFETCH_CONCURRENCY = 6;
 const SEARCH_DEBUG_DETAIL_CAP = 30;
 
 /** Describes why the FuN* releases of one search result were not grabbable, for debug logging. */
@@ -570,6 +579,287 @@ function resolveGrabTarget(fresh: ArrRelease[], stored: ArrRelease): GrabTarget 
   return best ? { release: best, strategy: "best-fun" } : undefined;
 }
 
+/** Monotonic high-resolution clock for sub-task timing, in milliseconds. */
+function nowMs(): number {
+  return performance.now();
+}
+
+/**
+ * Heuristic: does this error look like the indexer/download-client overloading us (as opposed to a
+ * plain not-found or rejection)? Used to decide whether to downshift grab concurrency.
+ */
+function isThrottleError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    message.includes("429") ||
+    message.includes("too many") ||
+    message.includes("returned 503") ||
+    message.includes("returned 504") ||
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("fetch failed") ||
+    message.includes("econnreset") ||
+    message.includes("etimedout")
+  );
+}
+
+type StoredCandidate = {
+  id: number;
+  mediaItemId: number | null;
+  childArrId: number;
+  release: ArrRelease;
+};
+
+type RecordPerf = (sample: Omit<PerfSampleInsert, "jobId" | "app" | "phase" | "createdAt">) => void;
+
+type GrabLoopParams = {
+  state: IpcState;
+  context: JobContext;
+  quota: QuotaService;
+  instanceId: number;
+  app: InstanceKind;
+  /** Singular noun for the grabbed child, used in messages ("episode" / "movie"). */
+  childNoun: string;
+  /** Field label for the parent arr id, used in messages ("seriesArrId" / "movieArrId"). */
+  childIdLabel: string;
+  candidates: StoredCandidate[];
+  /** Per-item indexer re-query — used by Radarr (one per movie) and as the Sonarr fallback. */
+  refetch: (childArrId: number) => Promise<ArrRelease[]>;
+  /** Issue the grab POST to the *arr instance. */
+  grab: (release: ArrRelease) => Promise<unknown>;
+  /**
+   * Optional batch pre-fetch. Returns fresh indexer results keyed by childArrId so that many
+   * candidates can re-match against a few shared queries (e.g. one per season) instead of one
+   * query each. Candidates absent from the returned map fall back to {@link refetch}.
+   */
+  prefetch?: (candidates: StoredCandidate[], recordPerf: RecordPerf) => Promise<Map<number, ArrRelease[]>>;
+};
+
+/**
+ * Shared grab loop for Sonarr and Radarr. Sonarr/Radarr only let you grab a release that is still
+ * in their short-lived server-side release cache, so for each stored candidate we re-query the
+ * indexer and re-match. The per-candidate indexer query is by far the slowest sub-task, so the
+ * optional {@link GrabLoopParams.prefetch} batches those queries (Sonarr: one per season) and the
+ * loop re-matches each candidate against the shared result, only re-querying per item when the
+ * batch missed. Every sub-task is timed into `perf_samples` for later performance analysis.
+ */
+async function grabStoredCandidates(params: GrabLoopParams): Promise<void> {
+  const { state, context, quota, instanceId, app, childNoun, childIdLabel, candidates, refetch, grab, prefetch } = params;
+  const jobId = context.jobId;
+
+  const recordPerf: RecordPerf = (sample): void => {
+    try {
+      state.repositories.perfSamples.insert({ ...sample, jobId, app, phase: "grab", createdAt: new Date() });
+    } catch {
+      // Performance logging must never break a grab.
+    }
+  };
+
+  // Batch-prefetch fresh releases (e.g. one indexer query per season) so most candidates avoid a
+  // per-item round-trip. Any failure here is non-fatal: those candidates fall back to refetch().
+  let prefetched = new Map<number, ArrRelease[]>();
+  if (prefetch && candidates.length > 0) {
+    try {
+      prefetched = await prefetch(candidates, recordPerf);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      context.addEvent("warning", `Batch pre-fetch failed (${message}); falling back to per-${childNoun} queries`);
+    }
+  }
+
+  let poolResult: AdaptivePoolResult | undefined;
+  try {
+    poolResult = await mapAdaptive(
+      candidates,
+      {
+        initialLimit: GRAB_CONCURRENCY,
+        safeLimit: GRAB_SAFE_CONCURRENCY,
+        onDownshift: (newLimit, reason) => {
+          const why = reason instanceof Error ? reason.message : String(reason);
+          context.addEvent(
+            "warning",
+            `Throttling detected (${why}); reducing grab concurrency ${GRAB_CONCURRENCY} → ${newLimit} for the rest of this run`,
+          );
+        },
+      },
+      async (candidate, _index, controls) => {
+        context.throwIfCancelled();
+        const release = candidate.release;
+        const releaseLabel = release.title ?? `candidate #${candidate.id}`;
+        context.addEvent(
+          "info",
+          `Grabbing "${releaseLabel}" (${childIdLabel}=${candidate.childArrId}, indexer=${release.indexer ?? "?"}, ` +
+            `approved=${release.approved ?? "?"}, downloadAllowed=${release.downloadAllowed ?? "?"}, guid=${release.guid ?? "?"})`,
+        );
+        const reservation = quota.reserve("grab", {
+          childArrId: candidate.childArrId,
+          instanceId,
+          mediaItemId: candidate.mediaItemId ?? undefined,
+          message: releaseLabel,
+        });
+        if (!reservation.allowed) {
+          context.addEvent("warning", `Grab budget exhausted before grabbing "${releaseLabel}"`);
+          context.blockByBudget(`Grab budget exhausted before ${app} grab`);
+        }
+
+        const startedMs = nowMs();
+        try {
+          // Prefer the batch-prefetched result set; only re-query per item if it is missing or
+          // does not contain a grabbable match for this candidate.
+          let target = resolveGrabTarget(prefetched.get(candidate.childArrId) ?? [], release);
+          let matchedVia: "season batch" | "re-fetched" = "season batch";
+          if (!target) {
+            matchedVia = "re-fetched";
+            const refetchStart = nowMs();
+            const fresh = await refetch(candidate.childArrId);
+            recordPerf({ operation: "refetch", childArrId: candidate.childArrId, outcome: "success", durationMs: nowMs() - refetchStart, detail: `${fresh.length} results` });
+            context.throwIfCancelled();
+            target = resolveGrabTarget(fresh, release);
+            if (!target) {
+              throw new Error(
+                `No grabbable FuN* release among ${fresh.length} current results for ${childNoun} ${candidate.childArrId} ` +
+                  `(looked for guid=${release.guid ?? "?"}, title="${releaseLabel}"). Re-run a FuN* search.`,
+              );
+            }
+          }
+          const grabbedLabel = target.release.title ?? releaseLabel;
+          if (target.strategy !== "guid") {
+            context.addEvent(
+              "warning",
+              `Stored release not matched by guid; grabbing via ${target.strategy} match: "${grabbedLabel}" (indexer=${target.release.indexer ?? "?"})`,
+            );
+          }
+          const grabStart = nowMs();
+          await grab(target.release);
+          recordPerf({ operation: "grab_post", childArrId: candidate.childArrId, strategy: target.strategy, outcome: "success", durationMs: nowMs() - grabStart });
+          state.repositories.releaseCandidates.delete(candidate.id);
+          quota.complete(reservation.activityId!, "success", grabbedLabel);
+          recordPerf({ operation: "grab_total", childArrId: candidate.childArrId, strategy: target.strategy, outcome: "success", durationMs: nowMs() - startedMs, detail: matchedVia });
+          context.addEvent("info", `Grabbed "${grabbedLabel}" (${matchedVia}, ${target.strategy} match) and removed it from the candidate store`);
+          context.incrementProgress();
+        } catch (error) {
+          // An overloaded indexer/download-client shows up here; tell the pool to back off.
+          if (isThrottleError(error)) {
+            controls.reportThrottle(error);
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          quota.complete(reservation.activityId!, "failed", message);
+          recordPerf({ operation: "grab_total", childArrId: candidate.childArrId, outcome: "failed", durationMs: nowMs() - startedMs, detail: message });
+          context.addEvent("error", `Failed to grab "${releaseLabel}": ${message}`);
+          context.incrementProgress({ failed: true });
+        }
+      },
+    );
+  } finally {
+    // Always emit the performance summary — including when the run is cut short by the grab budget
+    // or cancellation — so the timing breakdown and observed parallelism are available for analysis.
+    const summary = state.repositories.perfSamples.summarizeForJob(jobId);
+    const parts = summary.map((row) => `${row.operation}/${row.outcome}: n=${row.count}, avg=${row.avgMs}ms, max=${row.maxMs}ms`);
+    if (poolResult) {
+      const limitNote = poolResult.downshifted
+        ? `${GRAB_CONCURRENCY}→${poolResult.finalLimit} (throttled)`
+        : `${GRAB_CONCURRENCY}`;
+      parts.push(`peak parallelism ${poolResult.peakActive} of limit ${limitNote}`);
+    }
+    if (parts.length > 0) {
+      context.addEvent("info", `Grab performance — ${parts.join(" | ")}`);
+    }
+  }
+}
+
+/** Maps each episode id (childArrId) to its series + season, read from Sonarr's local episode list. */
+type EpisodeSeasonMap = Map<number, { seriesId: number; seasonNumber: number }>;
+
+/**
+ * Loads episode→season metadata for the requested series via Sonarr's `/episode` endpoint. This is a
+ * cheap local lookup (no indexer involved) and is the reliable source of each candidate's season —
+ * the interactive-search release JSON does not carry a usable seriesId/seasonNumber.
+ */
+async function loadEpisodeSeasonMap(
+  client: SonarrClient,
+  context: JobContext,
+  seriesArrIds: number[],
+): Promise<EpisodeSeasonMap> {
+  const map: EpisodeSeasonMap = new Map();
+  await mapConcurrent(seriesArrIds, EPISODE_LOAD_CONCURRENCY, async (seriesId) => {
+    try {
+      const episodes = await client.getEpisodes(seriesId, false);
+      for (const episode of episodes) {
+        if (typeof episode.seasonNumber === "number") {
+          map.set(episode.id, { seriesId, seasonNumber: episode.seasonNumber });
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      context.addEvent("warning", `Could not load episodes for series ${seriesId} (${message}); season batching disabled for it`);
+    }
+  });
+  return map;
+}
+
+/**
+ * Sonarr batch pre-fetch: one season-level indexer query per (series, season) pair, shared across
+ * all episode candidates of that season. Collapses N per-episode queries into roughly one per
+ * season — the single biggest grab speed-up, since a season of episodes otherwise queues N slow
+ * indexer searches. Candidates whose season cannot be resolved are left for per-episode refetch.
+ */
+async function prefetchSonarrSeasons(
+  client: SonarrClient,
+  context: JobContext,
+  candidates: StoredCandidate[],
+  recordPerf: RecordPerf,
+  episodeSeasons: EpisodeSeasonMap,
+): Promise<Map<number, ArrRelease[]>> {
+  type SeasonGroup = { seriesId: number; seasonNumber: number; episodeIds: number[] };
+  const groups = new Map<string, SeasonGroup>();
+  for (const candidate of candidates) {
+    const meta = episodeSeasons.get(candidate.childArrId);
+    if (!meta) {
+      continue;
+    }
+    const key = `${meta.seriesId}:${meta.seasonNumber}`;
+    const group = groups.get(key) ?? { seriesId: meta.seriesId, seasonNumber: meta.seasonNumber, episodeIds: [] };
+    group.episodeIds.push(candidate.childArrId);
+    groups.set(key, group);
+  }
+
+  const byEpisode = new Map<number, ArrRelease[]>();
+  if (groups.size === 0) {
+    return byEpisode;
+  }
+  context.addEvent("info", `Pre-fetching ${groups.size} season(s) for ${candidates.length} candidate(s)`);
+
+  await mapConcurrent([...groups.values()], SEASON_PREFETCH_CONCURRENCY, async (group) => {
+    context.throwIfCancelled();
+    const start = nowMs();
+    try {
+      const results = await client.getReleasesForSeason(group.seriesId, group.seasonNumber);
+      recordPerf({
+        operation: "season_refetch",
+        outcome: "success",
+        durationMs: nowMs() - start,
+        detail: `series ${group.seriesId} S${group.seasonNumber}: ${results.length} results for ${group.episodeIds.length} candidate(s)`,
+      });
+      for (const episodeId of group.episodeIds) {
+        byEpisode.set(episodeId, results);
+      }
+      context.addEvent(
+        "info",
+        `Season pre-fetch: series ${group.seriesId} season ${group.seasonNumber} → ${results.length} releases covering ${group.episodeIds.length} candidate(s)`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      recordPerf({ operation: "season_refetch", outcome: "failed", durationMs: nowMs() - start, detail: message });
+      context.addEvent(
+        "warning",
+        `Season pre-fetch failed for series ${group.seriesId} season ${group.seasonNumber} (${message}); those candidates fall back to per-episode queries`,
+      );
+    }
+  });
+
+  return byEpisode;
+}
+
 async function grabSonarrCandidates(state: IpcState, input: SonarrSeriesActionInput, context: JobContext): Promise<void> {
   const config = state.instanceStore.getWithApiKey("sonarr");
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
@@ -589,56 +879,22 @@ async function grabSonarrCandidates(state: IpcState, input: SonarrSeriesActionIn
     );
     return;
   }
-  context.addEvent("info", `Grabbing ${candidates.length} stored FuN* candidates with concurrency ${GRAB_CONCURRENCY}`);
+  context.addEvent("info", `Grabbing ${candidates.length} stored FuN* candidates with adaptive concurrency (start ${GRAB_CONCURRENCY}, safe ${GRAB_SAFE_CONCURRENCY})`);
 
-  await mapConcurrent(candidates, GRAB_CONCURRENCY, async (candidate) => {
-    context.throwIfCancelled();
-    const release = candidate.release;
-    const releaseLabel = release.title ?? `candidate #${candidate.id}`;
-    context.addEvent(
-      "info",
-      `Grabbing "${releaseLabel}" (seriesArrId=${candidate.childArrId}, indexer=${release.indexer ?? "?"}, ` +
-        `approved=${release.approved ?? "?"}, downloadAllowed=${release.downloadAllowed ?? "?"}, guid=${release.guid ?? "?"})`,
-    );
-    const reservation = quota.reserve("grab", {
-      childArrId: candidate.childArrId,
-      instanceId,
-      mediaItemId: candidate.mediaItemId ?? undefined,
-      message: releaseLabel,
-    });
-    if (!reservation.allowed) {
-      context.addEvent("warning", `Grab budget exhausted before grabbing "${releaseLabel}"`);
-      context.blockByBudget("Grab budget exhausted before Sonarr grab");
-    }
-    try {
-      const fresh = await client.getReleasesForEpisode(candidate.childArrId);
-      context.throwIfCancelled();
-      const target = resolveGrabTarget(fresh, release);
-      if (!target) {
-        throw new Error(
-          `No grabbable FuN* release among ${fresh.length} current results for episode ${candidate.childArrId} ` +
-            `(looked for guid=${release.guid ?? "?"}, title="${releaseLabel}"). Re-run a FuN* search.`,
-        );
-      }
-      const grabbedLabel = target.release.title ?? releaseLabel;
-      if (target.strategy !== "guid") {
-        context.addEvent(
-          "warning",
-          `Stored release not matched by guid; grabbing via ${target.strategy} match: "${grabbedLabel}" (indexer=${target.release.indexer ?? "?"})`,
-        );
-      }
-      await client.grabRelease(target.release);
-      context.throwIfCancelled();
-      state.repositories.releaseCandidates.delete(candidate.id);
-      quota.complete(reservation.activityId!, "success", grabbedLabel);
-      context.addEvent("info", `Grabbed "${grabbedLabel}" (re-fetched, ${target.strategy} match) and removed it from the candidate store`);
-      context.incrementProgress();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      quota.complete(reservation.activityId!, "failed", message);
-      context.addEvent("error", `Failed to grab "${releaseLabel}": ${message}`);
-      context.incrementProgress({ failed: true });
-    }
+  const episodeSeasons = await loadEpisodeSeasonMap(client, context, input.seriesIds);
+
+  await grabStoredCandidates({
+    state,
+    context,
+    quota,
+    instanceId,
+    app: "sonarr",
+    childNoun: "episode",
+    childIdLabel: "seriesArrId",
+    candidates,
+    prefetch: (items, recordPerf) => prefetchSonarrSeasons(client, context, items, recordPerf, episodeSeasons),
+    refetch: (childArrId) => client.getReleasesForEpisode(childArrId),
+    grab: (release) => client.grabRelease(release),
   });
 }
 
@@ -773,56 +1029,19 @@ async function grabRadarrCandidates(state: IpcState, input: RadarrMovieActionInp
     );
     return;
   }
-  context.addEvent("info", `Grabbing ${candidates.length} stored Radarr FuN* candidates with concurrency ${GRAB_CONCURRENCY}`);
+  context.addEvent("info", `Grabbing ${candidates.length} stored Radarr FuN* candidates with adaptive concurrency (start ${GRAB_CONCURRENCY}, safe ${GRAB_SAFE_CONCURRENCY})`);
 
-  await mapConcurrent(candidates, GRAB_CONCURRENCY, async (candidate) => {
-    context.throwIfCancelled();
-    const release = candidate.release;
-    const releaseLabel = release.title ?? `candidate #${candidate.id}`;
-    context.addEvent(
-      "info",
-      `Grabbing "${releaseLabel}" (movieArrId=${candidate.childArrId}, indexer=${release.indexer ?? "?"}, ` +
-        `approved=${release.approved ?? "?"}, downloadAllowed=${release.downloadAllowed ?? "?"}, guid=${release.guid ?? "?"})`,
-    );
-    const reservation = quota.reserve("grab", {
-      childArrId: candidate.childArrId,
-      instanceId,
-      mediaItemId: candidate.mediaItemId ?? undefined,
-      message: releaseLabel,
-    });
-    if (!reservation.allowed) {
-      context.addEvent("warning", `Grab budget exhausted before grabbing "${releaseLabel}"`);
-      context.blockByBudget("Grab budget exhausted before Radarr grab");
-    }
-    try {
-      const fresh = await client.getReleasesForMovie(candidate.childArrId);
-      context.throwIfCancelled();
-      const target = resolveGrabTarget(fresh, release);
-      if (!target) {
-        throw new Error(
-          `No grabbable FuN* release among ${fresh.length} current results for movie ${candidate.childArrId} ` +
-            `(looked for guid=${release.guid ?? "?"}, title="${releaseLabel}"). Re-run a FuN* search.`,
-        );
-      }
-      const grabbedLabel = target.release.title ?? releaseLabel;
-      if (target.strategy !== "guid") {
-        context.addEvent(
-          "warning",
-          `Stored release not matched by guid; grabbing via ${target.strategy} match: "${grabbedLabel}" (indexer=${target.release.indexer ?? "?"})`,
-        );
-      }
-      await client.grabRelease(target.release);
-      context.throwIfCancelled();
-      state.repositories.releaseCandidates.delete(candidate.id);
-      quota.complete(reservation.activityId!, "success", grabbedLabel);
-      context.addEvent("info", `Grabbed "${grabbedLabel}" (re-fetched, ${target.strategy} match) and removed it from the candidate store`);
-      context.incrementProgress();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      quota.complete(reservation.activityId!, "failed", message);
-      context.addEvent("error", `Failed to grab "${releaseLabel}": ${message}`);
-      context.incrementProgress({ failed: true });
-    }
+  await grabStoredCandidates({
+    state,
+    context,
+    quota,
+    instanceId,
+    app: "radarr",
+    childNoun: "movie",
+    childIdLabel: "movieArrId",
+    candidates,
+    refetch: (childArrId) => client.getReleasesForMovie(childArrId),
+    grab: (release) => client.grabRelease(release),
   });
 }
 

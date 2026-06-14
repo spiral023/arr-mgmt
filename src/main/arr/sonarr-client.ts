@@ -29,6 +29,15 @@ export class SonarrClient extends ArrApiClient {
     return this.get<ArrRelease[]>("/release", { episodeId });
   }
 
+  /**
+   * Season-level interactive search. One indexer query returns every release for the season —
+   * including the individual per-episode releases — so a whole season of grabs can re-match
+   * against a single result set instead of querying the indexer once per episode.
+   */
+  getReleasesForSeason(seriesId: number, seasonNumber: number): Promise<ArrRelease[]> {
+    return this.get<ArrRelease[]>("/release", { seriesId, seasonNumber });
+  }
+
   grabRelease(release: ArrRelease): Promise<ArrRelease> {
     return this.post<ArrRelease>("/release", release);
   }

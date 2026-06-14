@@ -1,5 +1,5 @@
 import type { AppDatabase } from "./client";
-import type { ActivityInsert, ActivityStatus, QuotaType } from "./schema";
+import type { ActivityInsert, ActivityStatus, PerfSampleInsert, QuotaType } from "./schema";
 import type { ArrRelease, MediaItemAnalysis } from "../arr/arr-types";
 import type { Job, JobEvent } from "../scheduler/job-runner";
 import { calculateNextRunAt } from "../../shared/schedule";
@@ -787,6 +787,100 @@ export function createRepositories(db: AppDatabase) {
           item: string;
           quota: string;
           status: string;
+        }>;
+      },
+    },
+
+    perfSamples: {
+      insert(input: PerfSampleInsert): void {
+        db.prepare(
+          `insert into perf_samples (
+             job_id,
+             app,
+             phase,
+             operation,
+             child_arr_id,
+             strategy,
+             outcome,
+             duration_ms,
+             detail,
+             created_at
+           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          input.jobId ?? null,
+          input.app ?? null,
+          input.phase,
+          input.operation,
+          input.childArrId ?? null,
+          input.strategy ?? null,
+          input.outcome,
+          Math.round(input.durationMs),
+          input.detail ?? null,
+          toIso(input.createdAt),
+        );
+      },
+
+      summarizeForJob(jobId: string): Array<{
+        operation: string;
+        outcome: string;
+        count: number;
+        avgMs: number;
+        minMs: number;
+        maxMs: number;
+      }> {
+        return db
+          .prepare(
+            `select
+               operation,
+               outcome,
+               count(*) as count,
+               cast(round(avg(duration_ms)) as integer) as avgMs,
+               min(duration_ms) as minMs,
+               max(duration_ms) as maxMs
+             from perf_samples
+             where job_id = ?
+             group by operation, outcome
+             order by operation, outcome`,
+          )
+          .all(jobId) as Array<{
+          operation: string;
+          outcome: string;
+          count: number;
+          avgMs: number;
+          minMs: number;
+          maxMs: number;
+        }>;
+      },
+
+      summarizeByPhase(phase: string): Array<{
+        operation: string;
+        outcome: string;
+        count: number;
+        avgMs: number;
+        minMs: number;
+        maxMs: number;
+      }> {
+        return db
+          .prepare(
+            `select
+               operation,
+               outcome,
+               count(*) as count,
+               cast(round(avg(duration_ms)) as integer) as avgMs,
+               min(duration_ms) as minMs,
+               max(duration_ms) as maxMs
+             from perf_samples
+             where phase = ?
+             group by operation, outcome
+             order by operation, outcome`,
+          )
+          .all(phase) as Array<{
+          operation: string;
+          outcome: string;
+          count: number;
+          avgMs: number;
+          minMs: number;
+          maxMs: number;
         }>;
       },
     },

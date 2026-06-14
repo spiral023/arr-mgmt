@@ -23,6 +23,7 @@ describe("database schema", () => {
         "release_candidates",
         "schedules",
         "settings",
+        "perf_samples",
       ]),
     );
   });
