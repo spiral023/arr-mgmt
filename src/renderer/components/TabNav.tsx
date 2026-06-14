@@ -1,8 +1,8 @@
 import type { LucideIcon } from "lucide-react";
-import { BarChart3, BriefcaseBusiness, Clapperboard, Gauge, Settings, Tv } from "lucide-react";
+import { BarChart3, BriefcaseBusiness, Clapperboard, Gauge, LineChart, Settings, Tv } from "lucide-react";
 import { clsx } from "clsx";
 
-export type AppTabId = "dashboard" | "sonarr" | "radarr" | "jobs" | "quotas" | "settings";
+export type AppTabId = "dashboard" | "sonarr" | "radarr" | "stats" | "jobs" | "quotas" | "settings";
 
 export interface AppTab {
   id: AppTabId;
@@ -14,6 +14,7 @@ const APP_TABS: AppTab[] = [
   { id: "dashboard", label: "Dashboard", icon: Gauge },
   { id: "sonarr", label: "Sonarr", icon: Tv },
   { id: "radarr", label: "Radarr", icon: Clapperboard },
+  { id: "stats", label: "Stats", icon: LineChart },
   { id: "jobs", label: "Jobs", icon: BriefcaseBusiness },
   { id: "quotas", label: "Quotas", icon: BarChart3 },
   { id: "settings", label: "Settings", icon: Settings },

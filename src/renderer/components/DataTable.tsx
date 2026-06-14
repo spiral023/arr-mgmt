@@ -7,7 +7,9 @@ import type {
   Row,
   RowSelectionState,
   SortingState,
+  Table,
   Updater,
+  VisibilityState,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -18,7 +20,7 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ArrowUpDown, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, Search } from "lucide-react";
 import { clsx } from "clsx";
 
 const EMPTY_COLUMN_FILTERS: ColumnFiltersState = [];
@@ -33,6 +35,7 @@ export interface DataTableProps<TData extends object> {
   data: TData[];
   description?: string;
   emptyMessage?: string;
+  enableColumnVisibility?: boolean;
   filters?: ReactNode;
   getRowId?: (row: TData, index: number) => string;
   globalFilter?: string;
@@ -45,6 +48,7 @@ export interface DataTableProps<TData extends object> {
   onSortingChange?: OnChangeFn<SortingState>;
   rowSelection?: RowSelectionState;
   searchPlaceholder?: string;
+  selectedSummary?: (selectedRows: Array<Row<TData>>) => string;
   sorting?: SortingState;
   title: string;
 }
@@ -56,6 +60,7 @@ export function DataTable<TData extends object>({
   data,
   description,
   emptyMessage = "No rows match the current filters.",
+  enableColumnVisibility = false,
   filters,
   getRowId,
   globalFilter,
@@ -68,6 +73,7 @@ export function DataTable<TData extends object>({
   onSortingChange,
   rowSelection,
   searchPlaceholder = "Search rows",
+  selectedSummary,
   sorting,
   title,
 }: DataTableProps<TData>) {
@@ -75,6 +81,8 @@ export function DataTable<TData extends object>({
   const [internalGlobalFilter, setInternalGlobalFilter] = useState(initialGlobalFilter);
   const [internalRowSelection, setInternalRowSelection] = useState<RowSelectionState>({});
   const [internalSorting, setInternalSorting] = useState<SortingState>(initialSorting);
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  const [columnMenuOpen, setColumnMenuOpen] = useState(false);
   const lastRangeRowIdRef = useRef<string | null>(null);
 
   const resolvedColumnFilters = columnFilters ?? internalColumnFilters;
@@ -108,11 +116,13 @@ export function DataTable<TData extends object>({
     getRowId,
     getSortedRowModel: getSortedRowModel(),
     onColumnFiltersChange: handleColumnFiltersChange,
+    onColumnVisibilityChange: setColumnVisibility,
     onGlobalFilterChange: handleGlobalFilterChange,
     onRowSelectionChange: handleRowSelectionChange,
     onSortingChange: handleSortingChange,
     state: {
       columnFilters: resolvedColumnFilters,
+      columnVisibility,
       globalFilter: resolvedGlobalFilter,
       rowSelection: resolvedRowSelection,
       sorting: resolvedSorting,
@@ -153,9 +163,8 @@ export function DataTable<TData extends object>({
         ? Math.max(0, rows.length - visibleRowIndexes.length) * VIRTUAL_ROW_HEIGHT
         : 0;
   const selectedLabel = useMemo(() => {
-    const count = selectedRows.length;
-    return `${count} selected`;
-  }, [selectedRows.length]);
+    return selectedSummary ? selectedSummary(selectedRows) : `${selectedRows.length} selected`;
+  }, [selectedRows, selectedSummary]);
 
   function handleTableSelectionClick(event: React.MouseEvent<HTMLTableElement>) {
     if (!isCheckboxClick(event.target)) {
@@ -221,6 +230,7 @@ export function DataTable<TData extends object>({
                 value={resolvedGlobalFilter}
               />
             </label>
+            {enableColumnVisibility ? <ColumnVisibilityMenu open={columnMenuOpen} onOpenChange={setColumnMenuOpen} table={table} /> : null}
             {filters}
           </div>
         </div>
@@ -317,6 +327,65 @@ export function DataTable<TData extends object>({
       </div>
     </section>
   );
+}
+
+function ColumnVisibilityMenu<TData extends object>({
+  onOpenChange,
+  open,
+  table,
+}: {
+  onOpenChange: (open: boolean | ((open: boolean) => boolean)) => void;
+  open: boolean;
+  table: Table<TData>;
+}) {
+  const hideableColumns = table.getAllLeafColumns().reduce<Array<(typeof table)["getAllLeafColumns"] extends () => Array<infer TColumn> ? TColumn : never>>(
+    (result, column) => {
+      if (column.getCanHide()) {
+        result.push(column);
+      }
+      return result;
+    },
+    [],
+  );
+
+  return (
+    <div className="relative">
+      <button
+        aria-expanded={open}
+        aria-label="Show or hide columns"
+        className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-md border border-white/10 bg-ink-950 px-3 text-sm text-ink-200 shadow-surface outline-none transition-[background-color,border-color,box-shadow,scale] duration-150 ease-out hover:bg-white/[0.06] focus-visible:border-signal-cyan focus-visible:ring-2 focus-visible:ring-signal-cyan/30 active:scale-[0.96]"
+        onClick={() => onOpenChange((current) => !current)}
+        type="button"
+      >
+        <Columns3 aria-hidden="true" className="h-4 w-4" />
+      </button>
+      {open ? (
+        <div className="absolute right-0 z-30 mt-2 max-h-80 w-56 overflow-auto rounded-lg bg-ink-900 p-2 shadow-[0_0_0_1px_rgba(255,255,255,0.10),0_18px_48px_rgba(0,0,0,0.42)]">
+          {hideableColumns.map((column) => {
+            const label = getColumnLabel(column.columnDef.header, column.id);
+            return (
+              <label
+                className="flex min-h-10 items-center gap-2 rounded-md px-2 text-sm text-ink-200 transition-[background-color] duration-150 ease-out hover:bg-white/[0.05]"
+                key={column.id}
+              >
+                <input
+                  checked={column.getIsVisible()}
+                  className="h-4 w-4 rounded border-white/20 bg-ink-950 accent-signal-cyan"
+                  onChange={column.getToggleVisibilityHandler()}
+                  type="checkbox"
+                />
+                <span className="truncate">{label}</span>
+              </label>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function getColumnLabel<TData extends object>(header: ColumnDef<TData, unknown>["header"], fallback: string): string {
+  return typeof header === "string" ? header : fallback;
 }
 
 function isCheckboxClick(target: EventTarget): target is HTMLInputElement {

@@ -1,113 +1,51 @@
 import { useMemo, useState } from "react";
-import type { ColumnDef, ColumnFiltersState } from "@tanstack/react-table";
+import type { ColumnDef, ColumnFiltersState, Row } from "@tanstack/react-table";
 import { ExternalLink, Eye, Radar, Search, Zap } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { ReleaseGroupBadge } from "../components/ReleaseGroupBadge";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
 import { updateColumnFilter } from "../state/table-state";
+import { usePersistedTableState } from "../state/use-persisted-table-state";
+import type { RadarrMovieTableRow } from "../../shared/ipc-contracts";
 
-type MovieStatus = "ready" | "candidate" | "searchable" | "blocked";
-
-interface RadarrMovieRow {
-  candidateFound: boolean;
-  hasFile: boolean;
-  id: string;
-  isFun: boolean;
-  lastAnalyzed: string;
-  lastGrabbed: string;
-  lastSearched: string;
-  monitored: boolean;
-  releaseGroup: string | null;
-  searchableNow: boolean;
-  sizeBytes: number;
-  status: MovieStatus;
-  title: string;
-  year: number;
-}
-
-const rows: RadarrMovieRow[] = [
-  {
-    candidateFound: true,
-    hasFile: true,
-    id: "movie-8222",
-    isFun: false,
-    lastAnalyzed: "2026-06-13 21:53",
-    lastGrabbed: "-",
-    lastSearched: "2026-06-13 20:29",
-    monitored: true,
-    releaseGroup: "TSCC",
-    searchableNow: true,
-    sizeBytes: 8_900_000_000,
-    status: "candidate",
-    title: "Nicht noch ein Teenie-Film",
-    year: 2001,
-  },
-  {
-    candidateFound: false,
-    hasFile: true,
-    id: "movie-2",
-    isFun: true,
-    lastAnalyzed: "2026-06-13 21:49",
-    lastGrabbed: "2026-06-11 22:19",
-    lastSearched: "2026-06-11 21:45",
-    monitored: true,
-    releaseGroup: "FuNHD",
-    searchableNow: false,
-    sizeBytes: 14_200_000_000,
-    status: "ready",
-    title: "Heat",
-    year: 1995,
-  },
-  {
-    candidateFound: false,
-    hasFile: true,
-    id: "movie-3",
-    isFun: false,
-    lastAnalyzed: "2026-06-13 20:10",
-    lastGrabbed: "-",
-    lastSearched: "2026-06-13 20:11",
-    monitored: true,
-    releaseGroup: "WvF",
-    searchableNow: false,
-    sizeBytes: 21_700_000_000,
-    status: "blocked",
-    title: "Dune: Part Two",
-    year: 2024,
-  },
-  {
-    candidateFound: false,
-    hasFile: false,
-    id: "movie-4",
-    isFun: false,
-    lastAnalyzed: "2026-06-12 18:02",
-    lastGrabbed: "-",
-    lastSearched: "-",
-    monitored: false,
-    releaseGroup: null,
-    searchableNow: false,
-    sizeBytes: 0,
-    status: "searchable",
-    title: "Pending Import",
-    year: 2026,
-  },
-];
+type MovieStatus = RadarrMovieTableRow["status"];
 
 const statusTone: Record<MovieStatus, StatusTone> = {
-  blocked: "warning",
-  candidate: "running",
+  cooldown: "warning",
+  failed: "danger",
   ready: "success",
-  searchable: "idle",
+  searchable: "running",
 };
 
-export function RadarrMoviesView() {
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+export function RadarrMoviesView({
+  analyzing = false,
+  onAnalyze,
+  onGrab,
+  onOpenInRadarr,
+  onSearch,
+  rows: liveRows,
+  statusMessage = "Ready",
+}: {
+  analyzing?: boolean;
+  onAnalyze?: (movieIds?: number[]) => void;
+  onGrab?: (movieIds: number[]) => void;
+  onOpenInRadarr?: (movieId: number) => void;
+  onSearch?: (movieIds: number[]) => void;
+  rows?: RadarrMovieTableRow[];
+  statusMessage?: string;
+}) {
+  const [detailsRow, setDetailsRow] = useState<RadarrMovieTableRow | null>(null);
+  const tableState = usePersistedTableState("arr-ops.table.radarr", {
+    sorting: [{ id: "nonFunFiles", desc: true }],
+  });
+  const rows = liveRows ?? [];
   const filterControls = useMemo(
-    () => <RadarrFilters columnFilters={columnFilters} onColumnFiltersChange={setColumnFilters} />,
-    [columnFilters],
+    () => <RadarrFilters columnFilters={tableState.state.columnFilters} onColumnFiltersChange={tableState.setColumnFilters} />,
+    [tableState],
   );
 
-  const columns = useMemo<Array<ColumnDef<RadarrMovieRow, unknown>>>(
+  const columns = useMemo<Array<ColumnDef<RadarrMovieTableRow, unknown>>>(
     () => [
       {
         cell: ({ row }) => (
@@ -119,6 +57,7 @@ export function RadarrMoviesView() {
             type="checkbox"
           />
         ),
+        enableHiding: false,
         enableSorting: false,
         header: ({ table }) => (
           <input
@@ -140,7 +79,7 @@ export function RadarrMoviesView() {
       },
       {
         accessorKey: "year",
-        cell: ({ getValue }) => <NumberCell value={getValue<number>()} />,
+        cell: ({ getValue }) => <NumberCell value={getValue<number | undefined>() ?? "-"} />,
         header: "Year",
         size: 88,
       },
@@ -152,7 +91,7 @@ export function RadarrMoviesView() {
         size: 112,
       },
       {
-        accessorKey: "hasFile",
+        accessorKey: "hasFiles",
         cell: ({ getValue }) => <BooleanCell value={getValue<boolean>()} />,
         filterFn: booleanFilter,
         header: "Has file",
@@ -171,11 +110,28 @@ export function RadarrMoviesView() {
         size: 148,
       },
       {
-        accessorKey: "isFun",
-        cell: ({ getValue }) => <StatusPill tone={getValue<boolean>() ? "success" : "muted"}>{getValue<boolean>() ? "yes" : "no"}</StatusPill>,
-        filterFn: booleanFilter,
-        header: "FuN*",
-        size: 88,
+        accessorKey: "funShare",
+        cell: ({ getValue }) => {
+          const value = getValue<number>();
+          return <NumberCell tone={value < 1 ? "warning" : "good"} value={formatPercent(value)} />;
+        },
+        filterFn: funShareFilter,
+        header: "FuN* share",
+        size: 120,
+      },
+      {
+        accessorKey: "nonFunFiles",
+        cell: ({ getValue }) => <NumberCell tone={getValue<number>() > 0 ? "warning" : "default"} value={getValue<number>()} />,
+        filterFn: positiveNumberFilter,
+        header: "Non-FuN",
+        size: 104,
+      },
+      {
+        accessorKey: "pendingFunCandidates",
+        cell: ({ getValue }) => <NumberCell tone={getValue<number>() > 0 ? "good" : "default"} value={getValue<number>()} />,
+        filterFn: positiveNumberFilter,
+        header: "Pending FuN*",
+        size: 128,
       },
       { accessorKey: "lastAnalyzed", header: "Last analyzed", size: 150 },
       { accessorKey: "lastSearched", header: "Last searched", size: 150 },
@@ -192,44 +148,103 @@ export function RadarrMoviesView() {
       {
         cell: ({ row }) => (
           <div className="flex gap-2">
-            <IconButton className="px-0" icon={Eye} label={`Open details for ${row.original.title}`} />
-            <IconButton className="px-0" icon={ExternalLink} label={`Open ${row.original.title} in Radarr`} />
+            <IconButton className="px-0" icon={Eye} label={`Open details for ${row.original.title}`} onClick={() => setDetailsRow(row.original)} />
+            <IconButton className="px-0" icon={ExternalLink} label={`Open ${row.original.title} in Radarr`} onClick={() => onOpenInRadarr?.(row.original.arrId)} />
           </div>
         ),
+        enableHiding: false,
         enableSorting: false,
         header: "Actions",
         id: "actions",
         size: 112,
       },
     ],
-    [],
+    [onOpenInRadarr],
   );
 
   return (
-    <DataTable
-      bulkActions={(selectedRows) => (
-        <>
-          <IconButton disabled={selectedRows.length === 0} icon={Radar} label="Analyze selected movies" tone="success">
-            Analyze selected
-          </IconButton>
-          <IconButton disabled={selectedRows.length === 0} icon={Search} label="Search selected movies">
-            Search selected
-          </IconButton>
-          <IconButton disabled={selectedRows.length === 0} icon={Zap} label="Grab available FuN releases" tone="warning">
-            Grab FuN*
-          </IconButton>
-        </>
-      )}
-      columnFilters={columnFilters}
-      columns={columns}
-      data={rows}
-      description="Movie-level FuN* coverage, candidate discovery, and per-title operations."
-      filters={filterControls}
-      getRowId={(row) => row.id}
-      initialSorting={[{ id: "status", desc: false }]}
-      searchPlaceholder="Search movies"
-      title="Radarr Movies"
-    />
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-white">Radarr Analysis</h2>
+          <p className="mt-1 text-sm text-ink-400">{statusMessage}</p>
+        </div>
+        <IconButton disabled={analyzing} icon={Radar} label="Analyze all Radarr movies" onClick={() => onAnalyze?.()} tone="success">
+          {analyzing ? "Analyzing..." : "Analyze all"}
+        </IconButton>
+      </div>
+
+      <DataTable
+        bulkActions={(selectedRows) => (
+          <>
+            <IconButton
+              disabled={selectedRows.length === 0 || analyzing}
+              icon={Radar}
+              label="Analyze selected Radarr movies"
+              onClick={() => onAnalyze?.(selectedRows.map((row) => row.original.arrId))}
+              tone="success"
+            >
+              Analyze
+            </IconButton>
+            <IconButton
+              disabled={selectedRows.length === 0}
+              icon={Search}
+              label="Search selected Radarr movies"
+              onClick={() => onSearch?.(selectedRows.map((row) => row.original.arrId))}
+            >
+              Search
+            </IconButton>
+            <IconButton
+              disabled={selectedRows.length === 0}
+              icon={Zap}
+              label="Grab selected pending Radarr FuN releases"
+              onClick={() => onGrab?.(selectedRows.map((row) => row.original.arrId))}
+              tone="warning"
+            >
+              Grab
+            </IconButton>
+          </>
+        )}
+        columnFilters={tableState.state.columnFilters}
+        columns={columns}
+        data={rows}
+        description="Movie-level FuN* coverage, candidate discovery, and selected-only operations."
+        enableColumnVisibility
+        filters={filterControls}
+        getRowId={(row) => row.id}
+        globalFilter={tableState.state.globalFilter}
+        onColumnFiltersChange={tableState.setColumnFilters}
+        onGlobalFilterChange={tableState.setGlobalFilter}
+        onRowSelectionChange={tableState.setRowSelection}
+        onSortingChange={tableState.setSorting}
+        rowSelection={tableState.state.rowSelection}
+        searchPlaceholder="Search movies"
+        selectedSummary={formatSelectedSummary}
+        sorting={tableState.state.sorting}
+        title="Radarr Movies"
+      />
+
+      {detailsRow ? (
+        <section className="rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-white">{detailsRow.title}</h2>
+              <p className="mt-1 text-sm text-ink-400">
+                {detailsRow.files} movie file, {detailsRow.nonFunFiles} non-FuN file, last analyzed {detailsRow.lastAnalyzed}.
+              </p>
+            </div>
+            <StatusPill tone={statusTone[detailsRow.status]}>{detailsRow.status}</StatusPill>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Detail label="FuN* share" value={formatPercent(detailsRow.funShare)} />
+            <Detail label="Pending FuN*" value={String(detailsRow.pendingFunCandidates)} />
+            <Detail label="Size" value={formatBytes(detailsRow.sizeBytes)} />
+            <Detail label="Last searched" value={detailsRow.lastSearched} />
+            <Detail label="Last grabbed" value={detailsRow.lastGrabbed} />
+          </div>
+        </section>
+      ) : null}
+    </div>
   );
 }
 
@@ -245,10 +260,11 @@ function RadarrFilters({
       <FilterSelect
         label="FuN state"
         onChange={(value) => {
-          let next = updateColumnFilter(columnFilters, "isFun", "");
-          if (value === "fun") next = updateColumnFilter(next, "isFun", true);
-          if (value === "notFun") next = updateColumnFilter(next, "isFun", false);
-          onColumnFiltersChange(next);
+          let next = updateColumnFilter(columnFilters, "funShare", "");
+          let next2 = updateColumnFilter(next, "nonFunFiles", "");
+          if (value === "fun") next2 = updateColumnFilter(next2, "funShare", "eq1");
+          if (value === "notFun") next2 = updateColumnFilter(next2, "nonFunFiles", "positive");
+          onColumnFiltersChange(next2);
         }}
         options={[
           ["", "All FuN states"],
@@ -260,12 +276,13 @@ function RadarrFilters({
         label="Flags"
         onChange={(value) => {
           let next = updateColumnFilter(columnFilters, "monitored", "");
-          next = updateColumnFilter(next, "hasFile", "");
+          next = updateColumnFilter(next, "hasFiles", "");
+          next = updateColumnFilter(next, "pendingFunCandidates", "");
           next = updateColumnFilter(next, "status", "");
           if (value === "monitored") next = updateColumnFilter(next, "monitored", true);
-          if (value === "hasFile") next = updateColumnFilter(next, "hasFile", true);
+          if (value === "hasFile") next = updateColumnFilter(next, "hasFiles", true);
           if (value === "searchableNow") next = updateColumnFilter(next, "status", "searchable");
-          if (value === "candidateFound") next = updateColumnFilter(next, "status", "candidate");
+          if (value === "candidateFound") next = updateColumnFilter(next, "pendingFunCandidates", "positive");
           onColumnFiltersChange(next);
         }}
         options={[
@@ -276,6 +293,20 @@ function RadarrFilters({
           ["candidateFound", "Candidate found"],
         ]}
       />
+    </div>
+  );
+}
+
+function formatSelectedSummary(selectedRows: Array<Row<RadarrMovieTableRow>>): string {
+  const pending = selectedRows.reduce((total, row) => total + row.original.pendingFunCandidates, 0);
+  return `${selectedRows.length} selected - ${pending} pending FuN* files`;
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-white/10 bg-ink-950/60 px-3 py-2">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-400">{label}</div>
+      <div className="mt-1 font-mono text-sm text-ink-200">{value}</div>
     </div>
   );
 }
@@ -310,15 +341,31 @@ function BooleanCell({ value }: { value: boolean }) {
   return <StatusPill tone={value ? "success" : "muted"}>{value ? "yes" : "no"}</StatusPill>;
 }
 
-function NumberCell({ value }: { value: number | string }) {
-  return <span className="font-mono text-sm text-ink-200 tabular-nums">{value}</span>;
+function NumberCell({ tone = "default", value }: { tone?: "default" | "good" | "warning"; value: number | string }) {
+  const toneClass = tone === "good" ? "text-signal-green" : tone === "warning" ? "text-signal-amber" : "text-ink-200";
+  return <span className={`font-mono text-sm tabular-nums ${toneClass}`}>{value}</span>;
 }
 
 function booleanFilter(row: { getValue: (id: string) => unknown }, columnId: string, value: unknown) {
   return value === "" || row.getValue(columnId) === value;
 }
 
+function positiveNumberFilter(row: { getValue: (id: string) => unknown }, columnId: string, value: unknown) {
+  return value !== "positive" || Number(row.getValue(columnId)) > 0;
+}
+
+function funShareFilter(row: { getValue: (id: string) => unknown }, columnId: string, value: unknown) {
+  const share = Number(row.getValue(columnId));
+  if (value === "eq1") return share === 1;
+  return true;
+}
+
+function formatPercent(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
 function formatBytes(value: number) {
   if (value === 0) return "0 GB";
+  if (value >= 1_000_000_000_000) return `${(value / 1_000_000_000_000).toFixed(1)} TB`;
   return `${(value / 1_000_000_000).toFixed(1)} GB`;
 }

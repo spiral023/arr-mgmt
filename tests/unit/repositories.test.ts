@@ -73,6 +73,117 @@ describe("repositories", () => {
       }),
     ]);
   });
+
+  it("persists Radarr rows with pending candidates", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+
+    const instanceId = repos.instances.upsert({
+      kind: "radarr",
+      name: "Radarr",
+      baseUrl: "http://radarr.local:7878",
+      apiKeyEncrypted: "encrypted",
+      enabled: true,
+      now: new Date("2026-06-13T20:00:00.000Z"),
+    });
+    const mediaItemId = repos.mediaItems.upsertAnalysis(instanceId, {
+      ...analysis(),
+      arrId: 201,
+      childrenWithFile: 1,
+      files: [
+        {
+          arrFileId: 3001,
+          childArrId: 201,
+          isFun: false,
+          path: "/movies/example.mkv",
+          qualityName: "WEBDL-1080p",
+          releaseGroup: "WvF",
+          sizeBytes: 4_000,
+        },
+      ],
+      funChildren: 0,
+      funShare: 0,
+      funSizeBytes: 0,
+      kind: "movie",
+      nonFunChildren: 1,
+      title: "Example Movie",
+      titleSlug: undefined,
+      totalChildren: 1,
+      totalSizeBytes: 4_000,
+      year: 2024,
+    });
+
+    repos.releaseCandidates.insert({
+      instanceId,
+      mediaItemId,
+      childArrId: 201,
+      release: { guid: "radarr-candidate", title: "Example.Movie.2024.FuN", releaseGroup: "FuN" },
+      foundAt: new Date("2026-06-13T21:00:00.000Z"),
+    });
+
+    expect(repos.mediaItems.listRadarrRows()).toEqual([
+      expect.objectContaining({
+        arrId: 201,
+        files: 1,
+        funFiles: 0,
+        nonFunFiles: 1,
+        pendingFunCandidates: 1,
+        status: "searchable",
+        title: "Example Movie",
+        year: 2024,
+      }),
+    ]);
+  });
+
+  it("stores daily coverage snapshots and activity stats", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+    const sonarrId = repos.instances.upsert({
+      kind: "sonarr",
+      name: "Sonarr",
+      baseUrl: "http://sonarr.local:8989",
+      apiKeyEncrypted: "encrypted",
+      enabled: true,
+      now: new Date("2026-06-13T20:00:00.000Z"),
+    });
+
+    repos.mediaItems.upsertAnalysis(sonarrId, analysis());
+    repos.stats.recordCoverageSnapshot(new Date("2026-06-13T22:00:00.000Z"));
+    repos.activityLog.insert({
+      action: "search",
+      quotaType: "search",
+      status: "success",
+      instanceId: sonarrId,
+      createdAt: new Date("2026-06-13T20:05:00.000Z"),
+    });
+    repos.activityLog.insert({
+      action: "grab",
+      quotaType: "grab",
+      status: "success",
+      instanceId: sonarrId,
+      createdAt: new Date("2026-06-13T20:10:00.000Z"),
+    });
+
+    expect(repos.stats.summary()).toEqual(
+      expect.objectContaining({
+        dailyActivity: [
+          expect.objectContaining({
+            date: "2026-06-13",
+            grabs: 1,
+            searches: 1,
+          }),
+        ],
+        coverageHistory: [
+          expect.objectContaining({
+            date: "2026-06-13",
+            sonarrFunShare: 0.5,
+          }),
+        ],
+      }),
+    );
+  });
 });
 
 function analysis(): MediaItemAnalysis {

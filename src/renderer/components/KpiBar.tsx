@@ -1,4 +1,5 @@
-import { Activity, Pause, Play, Radar, Search, Zap } from "lucide-react";
+import { Activity, Clapperboard, Pause, Play, Radar, Search, Tv, Zap } from "lucide-react";
+import { ActionMenu } from "./ActionMenu";
 import { IconButton } from "./IconButton";
 
 export interface KpiItem {
@@ -11,10 +12,14 @@ export interface KpiItem {
 export interface KpiBarProps {
   items?: KpiItem[];
   schedulerPaused?: boolean;
-  onAnalyze?: () => void;
-  onGrab?: () => void;
+  onAnalyzeRadarr?: () => void;
+  onAnalyzeSonarr?: () => void;
+  onGrabRadarr?: () => void;
+  onGrabSonarr?: () => void;
   onPauseScheduler?: () => void;
-  onSearch?: () => void;
+  onQuickSample?: () => void;
+  onSearchRadarr?: () => void;
+  onSearchSonarr?: () => void;
 }
 
 const defaultItems: KpiItem[] = [
@@ -37,16 +42,20 @@ const toneClasses: Record<NonNullable<KpiItem["tone"]>, string> = {
 export function KpiBar({
   items = defaultItems,
   schedulerPaused = false,
-  onAnalyze,
-  onGrab,
+  onAnalyzeRadarr,
+  onAnalyzeSonarr,
+  onGrabRadarr,
+  onGrabSonarr,
   onPauseScheduler,
-  onSearch,
+  onQuickSample,
+  onSearchRadarr,
+  onSearchSonarr,
 }: KpiBarProps) {
   return (
     <div className="flex flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-      <div className="grid min-w-0 flex-1 grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+      <div className="grid min-w-0 flex-1 grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-8">
         {items.map((item) => (
-          <div className="rounded-md border border-white/10 bg-ink-900/70 px-3 py-2 shadow-surface" key={item.label}>
+          <div className="rounded-md bg-ink-900/70 px-3 py-2 shadow-surface" key={item.label}>
             <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-400">{item.label}</div>
             <div className={`mt-1 text-lg font-semibold tabular-nums ${toneClasses[item.tone ?? "default"]}`}>
               {item.value}
@@ -57,15 +66,33 @@ export function KpiBar({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <IconButton icon={Radar} label="Analyze libraries" onClick={onAnalyze} tone="success">
-          Analyze
-        </IconButton>
-        <IconButton icon={Search} label="Search non-FuN items" onClick={onSearch}>
-          Search
-        </IconButton>
-        <IconButton icon={Zap} label="Grab available FuN releases" onClick={onGrab} tone="warning">
-          Grab
-        </IconButton>
+        <ActionMenu
+          icon={Radar}
+          items={[
+            { icon: Tv, label: "Analyze Sonarr", description: "Full library scan; can take a while", onClick: onAnalyzeSonarr, tone: "success" },
+            { icon: Clapperboard, label: "Analyze Radarr", description: "Full movie scan; can take a while", onClick: onAnalyzeRadarr, tone: "success" },
+            { icon: Activity, label: "Quick sample", description: "One Sonarr and one Radarr item", onClick: onQuickSample },
+          ]}
+          label="Analyze libraries"
+          tone="success"
+        />
+        <ActionMenu
+          icon={Search}
+          items={[
+            { icon: Tv, label: "Search Sonarr", description: "Use selected rows in Sonarr view", onClick: onSearchSonarr },
+            { icon: Clapperboard, label: "Search Radarr", description: "Use selected rows in Radarr view", onClick: onSearchRadarr },
+          ]}
+          label="Search non-FuN items"
+        />
+        <ActionMenu
+          icon={Zap}
+          items={[
+            { icon: Tv, label: "Grab Sonarr", description: "Grab pending Sonarr FuN* candidates", onClick: onGrabSonarr, tone: "warning" },
+            { icon: Clapperboard, label: "Grab Radarr", description: "Grab pending Radarr FuN* candidates", onClick: onGrabRadarr, tone: "warning" },
+          ]}
+          label="Grab available FuN releases"
+          tone="warning"
+        />
         <IconButton
           icon={schedulerPaused ? Play : Pause}
           label={schedulerPaused ? "Resume scheduler" : "Pause scheduler"}

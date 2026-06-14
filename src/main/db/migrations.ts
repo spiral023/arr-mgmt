@@ -119,8 +119,20 @@ const statements = [
     key text primary key,
     value_json text not null
   )`,
+  `create table if not exists coverage_snapshots (
+    date text primary key,
+    sonarr_fun_share real not null default 0,
+    radarr_fun_share real not null default 0,
+    total_fun_share real not null default 0,
+    sonarr_fun_files integer not null default 0,
+    radarr_fun_files integer not null default 0,
+    total_files integer not null default 0,
+    created_at text not null,
+    updated_at text not null
+  )`,
   "create index if not exists idx_activity_log_quota_created on activity_log(quota_type, created_at)",
   "create index if not exists idx_activity_log_media_action_created on activity_log(media_item_id, action, created_at)",
+  "create index if not exists idx_activity_log_action_created on activity_log(action, created_at)",
   "create index if not exists idx_media_items_instance_kind on media_items(instance_id, kind)",
   "create index if not exists idx_release_candidates_media on release_candidates(media_item_id, child_arr_id)",
 ];

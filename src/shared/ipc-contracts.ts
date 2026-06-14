@@ -7,6 +7,7 @@ export type IpcChannel =
   | "library:summary"
   | "library:sonarr"
   | "library:radarr"
+  | "stats:summary"
   | "activity:recent"
   | "jobs:list"
   | "jobs:events"
@@ -15,13 +16,21 @@ export type IpcChannel =
   | "quota:summary"
   | "sonarr:search"
   | "sonarr:grab"
-  | "sonarr:openSeries";
+  | "sonarr:openSeries"
+  | "radarr:search"
+  | "radarr:grab"
+  | "radarr:openMovie"
+  | "onboarding:complete";
 
 export type SonarrSeriesActionInput = {
   seriesIds: number[];
 };
 
-export type SonarrActionResult = {
+export type RadarrMovieActionInput = {
+  movieIds: number[];
+};
+
+export type ArrActionResult = {
   ok: boolean;
   message: string;
   jobId?: string;
@@ -30,6 +39,9 @@ export type SonarrActionResult = {
   grabbed?: number;
   failed?: number;
 };
+
+export type SonarrActionResult = ArrActionResult;
+export type RadarrActionResult = ArrActionResult;
 
 export type InstanceKind = "sonarr" | "radarr";
 
@@ -75,6 +87,27 @@ export type SonarrSeriesTableRow = {
   status: "ready" | "searchable" | "cooldown" | "failed";
 };
 
+export type RadarrMovieTableRow = {
+  id: string;
+  arrId: number;
+  title: string;
+  year?: number;
+  monitored: boolean;
+  hasFiles: boolean;
+  files: number;
+  sizeBytes: number;
+  funFiles: number;
+  funShare: number;
+  nonFunFiles: number;
+  pendingFunCandidates: number;
+  releaseGroup: string | null;
+  isFun: boolean;
+  lastAnalyzed: string;
+  lastSearched: string;
+  lastGrabbed: string;
+  status: "ready" | "searchable" | "cooldown" | "failed";
+};
+
 export type JobStatus = "queued" | "running" | "blocked_by_budget" | "completed" | "failed" | "cancelled";
 
 export type JobView = {
@@ -106,6 +139,37 @@ export type LibrarySummary = {
   totalSizeBytes: number;
   funFiles: number;
   funShare: number;
+  sonarrFunShare: number;
+  radarrFunShare: number;
+  sonarrPendingFunCandidates: number;
+  radarrPendingFunCandidates: number;
+  successfulGrabs: number;
+};
+
+export type CoverageHistoryPoint = {
+  date: string;
+  sonarrFunShare: number;
+  radarrFunShare: number;
+  totalFunShare: number;
+};
+
+export type DailyActivityPoint = {
+  date: string;
+  analyses: number;
+  searches: number;
+  grabs: number;
+  failed: number;
+};
+
+export type StatsSummary = {
+  coverageHistory: CoverageHistoryPoint[];
+  dailyActivity: DailyActivityPoint[];
+  totals: {
+    searches: number;
+    grabs: number;
+    analyses: number;
+    failed: number;
+  };
 };
 
 export type QuotaSummary = {

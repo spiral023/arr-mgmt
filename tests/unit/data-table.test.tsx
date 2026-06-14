@@ -106,4 +106,27 @@ describe("DataTable", () => {
     expect(screen.getAllByRole("row").length).toBeLessThan(120);
     expect(screen.queryByText("Row 499")).not.toBeInTheDocument();
   });
+
+  it("can hide and show optional columns", () => {
+    const rows: RowData[] = [{ id: "one", title: "One" }];
+    const columns: Array<ColumnDef<RowData, unknown>> = [
+      { accessorKey: "title", header: "Title" },
+      { accessorKey: "id", header: "Internal ID" },
+    ];
+
+    render(
+      <DataTable
+        columns={columns}
+        data={rows}
+        enableColumnVisibility
+        getRowId={(row) => row.id}
+        title="Rows"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show or hide columns" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Internal ID" }));
+
+    expect(screen.queryByRole("columnheader", { name: /Internal ID/ })).not.toBeInTheDocument();
+  });
 });

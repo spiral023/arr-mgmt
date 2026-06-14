@@ -10,10 +10,14 @@ export interface AppFrameProps {
   children: ReactNode;
   kpis?: KpiItem[];
   schedulerPaused?: boolean;
-  onAnalyze?: () => void;
-  onGrab?: () => void;
+  onAnalyzeRadarr?: () => void;
+  onAnalyzeSonarr?: () => void;
+  onGrabRadarr?: () => void;
+  onGrabSonarr?: () => void;
   onPauseScheduler?: () => void;
-  onSearch?: () => void;
+  onQuickSample?: () => void;
+  onSearchRadarr?: () => void;
+  onSearchSonarr?: () => void;
   onTabChange: (tab: AppTabId) => void;
 }
 
@@ -22,10 +26,14 @@ export function AppFrame({
   children,
   kpis,
   schedulerPaused,
-  onAnalyze,
-  onGrab,
+  onAnalyzeRadarr,
+  onAnalyzeSonarr,
+  onGrabRadarr,
+  onGrabSonarr,
   onPauseScheduler,
-  onSearch,
+  onQuickSample,
+  onSearchRadarr,
+  onSearchSonarr,
   onTabChange,
 }: AppFrameProps) {
   return (
@@ -48,10 +56,14 @@ export function AppFrame({
         </div>
         <KpiBar
           items={kpis}
-          onAnalyze={onAnalyze}
-          onGrab={onGrab}
+          onAnalyzeRadarr={onAnalyzeRadarr}
+          onAnalyzeSonarr={onAnalyzeSonarr}
+          onGrabRadarr={onGrabRadarr}
+          onGrabSonarr={onGrabSonarr}
           onPauseScheduler={onPauseScheduler}
-          onSearch={onSearch}
+          onQuickSample={onQuickSample}
+          onSearchRadarr={onSearchRadarr}
+          onSearchSonarr={onSearchSonarr}
           schedulerPaused={schedulerPaused}
         />
         <TabNav activeTab={activeTab} onTabChange={onTabChange} />

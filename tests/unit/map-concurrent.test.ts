@@ -31,4 +31,20 @@ describe("mapConcurrent", () => {
 
     expect(maxActive).toBe(1);
   });
+
+  it("yields to timers between batches for sync-heavy mappers", async () => {
+    let timerFired = false;
+    setTimeout(() => {
+      timerFired = true;
+    }, 0);
+
+    await mapConcurrent(
+      Array.from({ length: 50 }, (_, index) => index),
+      4,
+      async (value) => value,
+      { yieldEvery: 1 },
+    );
+
+    expect(timerFired).toBe(true);
+  });
 });

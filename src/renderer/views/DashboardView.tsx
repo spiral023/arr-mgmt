@@ -67,8 +67,8 @@ export function DashboardView() {
       { icon: HardDrive, label: "Total files", value: String(summary.totalFiles), detail: formatBytes(summary.totalSizeBytes) },
       { icon: ShieldCheck, label: "FuN* files", value: String(summary.funFiles), detail: `${Math.round(summary.funShare * 100)}% coverage` },
       { icon: Download, label: "FuN* size share", value: `${Math.round(summary.funShare * 100)}%`, detail: "of files" },
-      { icon: Search, label: "Search budget", value: String(quota.search.remaining), detail: `${quota.search.used} used / ${quota.search.limit}` },
-      { icon: CheckCircle2, label: "Grab budget", value: String(quota.grab.remaining), detail: `${quota.grab.used} used / ${quota.grab.limit}` },
+      { icon: Search, label: "Search remaining", value: String(quota.search.remaining), detail: `${quota.search.used} used / ${quota.search.limit}` },
+      { icon: CheckCircle2, label: "Grab remaining", value: String(quota.grab.remaining), detail: `${quota.grab.used} used / ${quota.grab.limit}` },
       { icon: Clock, label: "Active jobs", value: String(jobs.filter((job) => job.status === "running").length), detail: `${jobs.filter((job) => job.status === "queued").length} queued` },
     ]);
   }

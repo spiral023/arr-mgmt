@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
-import type { ColumnDef, ColumnFiltersState } from "@tanstack/react-table";
+import type { ColumnDef, ColumnFiltersState, Row } from "@tanstack/react-table";
 import { ExternalLink, Eye, Radar, Search, Zap } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
 import { updateColumnFilter, type TableFilterValue } from "../state/table-state";
+import { usePersistedTableState } from "../state/use-persisted-table-state";
 import type { SonarrSeriesTableRow } from "../../shared/ipc-contracts";
 
 type SeriesStatus = "ready" | "searchable" | "cooldown" | "failed";
@@ -35,12 +36,14 @@ export function SonarrSeriesView({
   rows?: SonarrSeriesTableRow[];
   statusMessage?: string;
 }) {
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [detailsRow, setDetailsRow] = useState<SonarrSeriesRow | null>(null);
+  const tableState = usePersistedTableState("arr-ops.table.sonarr", {
+    sorting: [{ id: "nonFunFiles", desc: true }],
+  });
   const resolvedRows = liveRows ?? [];
   const filterControls = useMemo(
-    () => <SonarrFilters columnFilters={columnFilters} onColumnFiltersChange={setColumnFilters} />,
-    [columnFilters],
+    () => <SonarrFilters columnFilters={tableState.state.columnFilters} onColumnFiltersChange={tableState.setColumnFilters} />,
+    [tableState],
   );
 
   const columns = useMemo<Array<ColumnDef<SonarrSeriesRow, unknown>>>(
@@ -206,14 +209,22 @@ export function SonarrSeriesView({
             </IconButton>
           </>
         )}
-        columnFilters={columnFilters}
+        columnFilters={tableState.state.columnFilters}
         columns={columns}
         data={resolvedRows}
         description="Series-level coverage with selected-only search/grab controls, pending FuN* candidates, and FuN* share filters."
+        enableColumnVisibility
         filters={filterControls}
+        globalFilter={tableState.state.globalFilter}
         getRowId={(row) => row.id}
-        initialSorting={[{ id: "nonFunFiles", desc: true }]}
+        onColumnFiltersChange={tableState.setColumnFilters}
+        onGlobalFilterChange={tableState.setGlobalFilter}
+        onRowSelectionChange={tableState.setRowSelection}
+        onSortingChange={tableState.setSorting}
+        rowSelection={tableState.state.rowSelection}
         searchPlaceholder="Search series"
+        selectedSummary={formatSelectedSummary}
+        sorting={tableState.state.sorting}
         title="Sonarr Series"
       />
       {detailsRow ? (
@@ -238,6 +249,11 @@ export function SonarrSeriesView({
       ) : null}
     </div>
   );
+}
+
+function formatSelectedSummary(selectedRows: Array<Row<SonarrSeriesRow>>): string {
+  const pending = selectedRows.reduce((total, row) => total + row.original.pendingFunCandidates, 0);
+  return `${selectedRows.length} selected - ${pending} pending FuN* files`;
 }
 
 function Detail({ label, value }: { label: string; value: string }) {

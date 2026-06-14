@@ -6,9 +6,9 @@ export function createAppShell(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1440,
     height: 920,
-    minWidth: 1100,
-    minHeight: 720,
-    fullscreen: true,
+    minWidth: 920,
+    minHeight: 640,
+    show: false,
     title: "ARR Ops",
     backgroundColor: "#090a0b",
     webPreferences: {
@@ -17,6 +17,11 @@ export function createAppShell(): BrowserWindow {
       nodeIntegration: false,
       sandbox: false,
     },
+  });
+
+  win.once("ready-to-show", () => {
+    win.maximize();
+    win.show();
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {

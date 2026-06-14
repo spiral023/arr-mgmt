@@ -8,9 +8,13 @@ import type {
   JobView,
   LibrarySummary,
   QuotaSummary,
+  RadarrActionResult,
+  RadarrMovieActionInput,
+  RadarrMovieTableRow,
   SonarrActionResult,
   SonarrSeriesTableRow,
   SonarrSeriesActionInput,
+  StatsSummary,
 } from "../../shared/ipc-contracts";
 
 export async function invokeIpc<T>(channel: IpcChannel, payload?: unknown): Promise<T> {
@@ -40,12 +44,40 @@ export function analyzeSonarr(seriesIds?: number[]): Promise<unknown> {
   });
 }
 
+export function analyzeSonarrSample(): Promise<unknown> {
+  return invokeIpc("jobs:enqueue", {
+    name: "Analyze one Sonarr series",
+    target: "sonarr",
+    sampleSize: 1,
+  });
+}
+
+export function analyzeRadarr(movieIds?: number[]): Promise<unknown> {
+  return invokeIpc("jobs:enqueue", {
+    name: movieIds && movieIds.length > 0 ? "Analyze selected Radarr movies" : "Analyze Radarr",
+    target: "radarr",
+    movieIds,
+  });
+}
+
+export function analyzeRadarrSample(): Promise<unknown> {
+  return invokeIpc("jobs:enqueue", {
+    name: "Analyze one Radarr movie",
+    target: "radarr",
+    sampleSize: 1,
+  });
+}
+
 export function getLibrarySummary(): Promise<LibrarySummary> {
   return invokeIpc<LibrarySummary>("library:summary");
 }
 
 export function getSonarrRows(): Promise<SonarrSeriesTableRow[]> {
   return invokeIpc<SonarrSeriesTableRow[]>("library:sonarr");
+}
+
+export function getRadarrRows(): Promise<RadarrMovieTableRow[]> {
+  return invokeIpc<RadarrMovieTableRow[]>("library:radarr");
 }
 
 export function listJobs(): Promise<JobView[]> {
@@ -68,6 +100,10 @@ export function getRecentActivity(): Promise<ActivityRowView[]> {
   return invokeIpc<ActivityRowView[]>("activity:recent");
 }
 
+export function getStatsSummary(): Promise<StatsSummary> {
+  return invokeIpc<StatsSummary>("stats:summary");
+}
+
 export function searchSonarrSeries(seriesIds: number[]): Promise<SonarrActionResult> {
   return invokeIpc<SonarrActionResult>("sonarr:search", { seriesIds } satisfies SonarrSeriesActionInput);
 }
@@ -76,8 +112,28 @@ export function grabSonarrSeries(seriesIds: number[]): Promise<SonarrActionResul
   return invokeIpc<SonarrActionResult>("sonarr:grab", { seriesIds } satisfies SonarrSeriesActionInput);
 }
 
+export function searchRadarrMovies(movieIds: number[]): Promise<RadarrActionResult> {
+  return invokeIpc<RadarrActionResult>("radarr:search", { movieIds } satisfies RadarrMovieActionInput);
+}
+
+export function grabRadarrMovies(movieIds: number[]): Promise<RadarrActionResult> {
+  return invokeIpc<RadarrActionResult>("radarr:grab", { movieIds } satisfies RadarrMovieActionInput);
+}
+
 export function openSonarrSeries(seriesId: number, titleSlug?: string): Promise<{ ok: boolean }> {
   return invokeIpc<{ ok: boolean }>("sonarr:openSeries", { seriesId, titleSlug });
+}
+
+export function openRadarrMovie(movieId: number): Promise<{ ok: boolean }> {
+  return invokeIpc<{ ok: boolean }>("radarr:openMovie", { movieId });
+}
+
+export function getSettings(): Promise<{ instances: InstanceConfigView[]; onboardingCompleted: boolean }> {
+  return invokeIpc("settings:get");
+}
+
+export function completeOnboarding(): Promise<{ ok: boolean }> {
+  return invokeIpc("onboarding:complete");
 }
 
 export function subscribeToJobEvents(callback: (payload: unknown) => void): () => void {
@@ -94,17 +150,85 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
       { kind: "radarr", name: "Radarr", baseUrl: "http://192.168.0.170:7878", enabled: true, hasApiKey: false },
     ] as T;
   }
+  if (channel === "settings:get") {
+    return {
+      instances: [
+        { kind: "sonarr", name: "Sonarr", baseUrl: "http://192.168.0.170:8989", enabled: true, hasApiKey: false },
+        { kind: "radarr", name: "Radarr", baseUrl: "http://192.168.0.170:7878", enabled: true, hasApiKey: false },
+      ],
+      onboardingCompleted: true,
+    } as T;
+  }
   if (channel === "instances:test") {
     return { ok: false, message: "IPC is only available in the Electron app." } as T;
   }
   if (channel === "library:sonarr") {
-    return [] as T;
+    return [
+      {
+        arrId: 1203,
+        episodes: 8,
+        files: 8,
+        funFiles: 3,
+        funShare: 0.375,
+        hasFiles: true,
+        id: "series-1203",
+        lastAnalyzed: "2026-06-13 21:10",
+        lastGrabbed: "-",
+        lastSearched: "2026-06-13 21:12",
+        monitored: true,
+        nonFunFiles: 5,
+        pendingFunCandidates: 2,
+        status: "searchable",
+        title: "Criminal Record",
+        titleSlug: "criminal-record",
+        totalSizeBytes: 24_000_000_000,
+      },
+    ] as T;
+  }
+  if (channel === "library:radarr") {
+    return [
+      {
+        arrId: 8222,
+        files: 1,
+        funFiles: 0,
+        funShare: 0,
+        hasFiles: true,
+        id: "movie-8222",
+        isFun: false,
+        lastAnalyzed: "2026-06-13 21:53",
+        lastGrabbed: "-",
+        lastSearched: "2026-06-13 20:29",
+        monitored: true,
+        nonFunFiles: 1,
+        pendingFunCandidates: 1,
+        releaseGroup: "TSCC",
+        sizeBytes: 8_900_000_000,
+        status: "searchable",
+        title: "Nicht noch ein Teenie-Film",
+        year: 2001,
+      },
+    ] as T;
   }
   if (channel === "jobs:list" || channel === "jobs:events" || channel === "activity:recent") {
     return [] as T;
   }
   if (channel === "library:summary") {
-    return { totalSeries: 0, totalMovies: 0, totalFiles: 0, totalSizeBytes: 0, funFiles: 0, funShare: 0 } as T;
+    return {
+      totalSeries: 0,
+      totalMovies: 0,
+      totalFiles: 0,
+      totalSizeBytes: 0,
+      funFiles: 0,
+      funShare: 0,
+      sonarrFunShare: 0,
+      radarrFunShare: 0,
+      sonarrPendingFunCandidates: 0,
+      radarrPendingFunCandidates: 0,
+      successfulGrabs: 0,
+    } as T;
+  }
+  if (channel === "stats:summary") {
+    return { coverageHistory: [], dailyActivity: [], totals: { analyses: 0, searches: 0, grabs: 0, failed: 0 } } as T;
   }
   if (channel === "quota:summary") {
     return {

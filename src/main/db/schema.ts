@@ -8,6 +8,7 @@ export const tableNames = [
   "activity_log",
   "schedules",
   "settings",
+  "coverage_snapshots",
 ] as const;
 
 export type TableName = (typeof tableNames)[number];

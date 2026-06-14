@@ -2,7 +2,7 @@ import type { AppDatabase } from "./client";
 import type { ActivityInsert, QuotaType } from "./schema";
 import type { ArrRelease, MediaItemAnalysis } from "../arr/arr-types";
 import type { Job, JobEvent } from "../scheduler/job-runner";
-import type { InstanceKind, LibrarySummary, SonarrSeriesTableRow } from "../../shared/ipc-contracts";
+import type { InstanceKind, LibrarySummary, RadarrMovieTableRow, SonarrSeriesTableRow, StatsSummary } from "../../shared/ipc-contracts";
 
 function toIso(date: Date): string {
   return date.toISOString();
@@ -142,7 +142,11 @@ export function createRepositories(db: AppDatabase) {
                sum(case when kind = 'movie' then 1 else 0 end) as totalMovies,
                coalesce(sum(children_with_file), 0) as totalFiles,
                coalesce(sum(total_size_bytes), 0) as totalSizeBytes,
-               coalesce(sum(fun_children), 0) as funFiles
+               coalesce(sum(fun_children), 0) as funFiles,
+               coalesce(sum(case when kind = 'series' then children_with_file else 0 end), 0) as sonarrFiles,
+               coalesce(sum(case when kind = 'series' then fun_children else 0 end), 0) as sonarrFunFiles,
+               coalesce(sum(case when kind = 'movie' then children_with_file else 0 end), 0) as radarrFiles,
+               coalesce(sum(case when kind = 'movie' then fun_children else 0 end), 0) as radarrFunFiles
              from media_items`,
           )
           .get() as {
@@ -151,7 +155,24 @@ export function createRepositories(db: AppDatabase) {
           totalFiles: number;
           totalSizeBytes: number;
           funFiles: number;
+          sonarrFiles: number;
+          sonarrFunFiles: number;
+          radarrFiles: number;
+          radarrFunFiles: number;
         };
+        const pending = db
+          .prepare(
+            `select
+               coalesce(sum(case when mi.kind = 'series' then 1 else 0 end), 0) as sonarrPending,
+               coalesce(sum(case when mi.kind = 'movie' then 1 else 0 end), 0) as radarrPending
+             from release_candidates rc
+             left join media_items mi on mi.id = rc.media_item_id
+             where rc.is_fun = 1`,
+          )
+          .get() as { sonarrPending: number; radarrPending: number };
+        const grabs = db
+          .prepare("select count(*) as count from activity_log where action = 'grab' and status = 'success'")
+          .get() as { count: number };
         return {
           totalSeries: row.totalSeries ?? 0,
           totalMovies: row.totalMovies ?? 0,
@@ -159,6 +180,11 @@ export function createRepositories(db: AppDatabase) {
           totalSizeBytes: row.totalSizeBytes,
           funFiles: row.funFiles,
           funShare: row.totalFiles === 0 ? 0 : row.funFiles / row.totalFiles,
+          sonarrFunShare: row.sonarrFiles === 0 ? 0 : row.sonarrFunFiles / row.sonarrFiles,
+          radarrFunShare: row.radarrFiles === 0 ? 0 : row.radarrFunFiles / row.radarrFiles,
+          sonarrPendingFunCandidates: pending.sonarrPending,
+          radarrPendingFunCandidates: pending.radarrPending,
+          successfulGrabs: grabs.count,
         };
       },
 
@@ -270,6 +296,106 @@ export function createRepositories(db: AppDatabase) {
           };
         });
       },
+
+      listRadarrRows(): RadarrMovieTableRow[] {
+        const rows = db
+          .prepare(
+            `with last_activity as (
+               select
+                 media_item_id,
+                 max(case when action = 'search' then created_at end) as lastSearched,
+                 max(case when action = 'grab' then created_at end) as lastGrabbed
+               from activity_log
+               where action in ('search', 'grab')
+               group by media_item_id
+             ),
+             pending_candidates as (
+               select
+                 media_item_id,
+                 count(*) as pendingFunCandidates
+               from release_candidates
+               where is_fun = 1
+               group by media_item_id
+             ),
+             first_file as (
+               select
+                 media_item_id,
+                 release_group as releaseGroup,
+                 is_fun as isFun,
+                 size_bytes as sizeBytes
+               from media_files
+               group by media_item_id
+             )
+             select
+               mi.id,
+               mi.arr_id as arrId,
+               mi.title,
+               mi.year,
+               mi.monitored,
+               mi.has_file as hasFiles,
+               mi.children_with_file as files,
+               mi.fun_children as funFiles,
+               mi.total_size_bytes as totalSizeBytes,
+               mi.fun_share as funShare,
+               mi.last_analyzed_at as lastAnalyzed,
+               la.lastSearched,
+               la.lastGrabbed,
+               coalesce(pc.pendingFunCandidates, 0) as pendingFunCandidates,
+               ff.releaseGroup,
+               coalesce(ff.isFun, 0) as isFun,
+               coalesce(ff.sizeBytes, mi.total_size_bytes, 0) as sizeBytes
+             from media_items mi
+             join instances i on i.id = mi.instance_id
+             left join last_activity la on la.media_item_id = mi.id
+             left join pending_candidates pc on pc.media_item_id = mi.id
+             left join first_file ff on ff.media_item_id = mi.id
+             where i.kind = 'radarr' and mi.kind = 'movie'
+             order by mi.title collate nocase`,
+          )
+          .all() as Array<{
+          id: number;
+          arrId: number;
+          title: string;
+          year: number | null;
+          monitored: 0 | 1;
+          hasFiles: 0 | 1;
+          files: number;
+          funFiles: number;
+          totalSizeBytes: number;
+          funShare: number;
+          lastAnalyzed: string | null;
+          lastSearched: string | null;
+          lastGrabbed: string | null;
+          pendingFunCandidates: number;
+          releaseGroup: string | null;
+          isFun: 0 | 1;
+          sizeBytes: number;
+        }>;
+
+        return rows.map((row) => {
+          const nonFunFiles = row.files - row.funFiles;
+          return {
+            id: `movie-${row.arrId}`,
+            arrId: row.arrId,
+            title: row.title,
+            year: row.year ?? undefined,
+            monitored: Boolean(row.monitored),
+            hasFiles: Boolean(row.hasFiles),
+            files: row.files,
+            sizeBytes: row.sizeBytes,
+            funFiles: row.funFiles,
+            funShare: row.funShare,
+            nonFunFiles,
+            pendingFunCandidates: row.pendingFunCandidates,
+            releaseGroup: row.releaseGroup,
+            isFun: Boolean(row.isFun),
+            lastAnalyzed: row.lastAnalyzed ?? "-",
+            lastSearched: row.lastSearched ?? "-",
+            lastGrabbed: row.lastGrabbed ?? "-",
+            status: nonFunFiles > 0 ? "searchable" : "ready",
+          };
+        });
+      },
     },
 
     releaseCandidates: {
@@ -336,6 +462,28 @@ export function createRepositories(db: AppDatabase) {
              order by rc.found_at asc`,
           )
           .all(...seriesIds) as Array<{ id: number; mediaItemId: number | null; childArrId: number; rawJson: string }>;
+        return rows.map((row) => ({
+          id: row.id,
+          mediaItemId: row.mediaItemId,
+          childArrId: row.childArrId,
+          release: JSON.parse(row.rawJson) as ArrRelease,
+        }));
+      },
+
+      listForMovieIds(movieIds: number[]): Array<{ id: number; mediaItemId: number | null; childArrId: number; release: ArrRelease }> {
+        if (movieIds.length === 0) {
+          return [];
+        }
+        const placeholders = movieIds.map(() => "?").join(", ");
+        const rows = db
+          .prepare(
+            `select rc.id, rc.media_item_id as mediaItemId, rc.child_arr_id as childArrId, rc.raw_json as rawJson
+             from release_candidates rc
+             join media_items mi on mi.id = rc.media_item_id
+             where mi.kind = 'movie' and mi.arr_id in (${placeholders})
+             order by rc.found_at asc`,
+          )
+          .all(...movieIds) as Array<{ id: number; mediaItemId: number | null; childArrId: number; rawJson: string }>;
         return rows.map((row) => ({
           id: row.id,
           mediaItemId: row.mediaItemId,
@@ -512,9 +660,154 @@ export function createRepositories(db: AppDatabase) {
         }>;
       },
     },
+
+    settings: {
+      get<T>(key: string, fallback: T): T {
+        const row = db.prepare("select value_json as valueJson from settings where key = ?").get(key) as { valueJson: string } | undefined;
+        return row ? (JSON.parse(row.valueJson) as T) : fallback;
+      },
+
+      set(key: string, value: unknown): void {
+        db.prepare(
+          `insert into settings (key, value_json)
+           values (?, ?)
+           on conflict(key) do update set value_json = excluded.value_json`,
+        ).run(key, JSON.stringify(value));
+      },
+    },
+
+    stats: {
+      recordCoverageSnapshot(now = new Date()): void {
+        const summary = this.mediaSummary();
+        const date = toDateKey(now);
+        const iso = toIso(now);
+        db.prepare(
+          `insert into coverage_snapshots (
+             date,
+             sonarr_fun_share,
+             radarr_fun_share,
+             total_fun_share,
+             sonarr_fun_files,
+             radarr_fun_files,
+             total_files,
+             created_at,
+             updated_at
+           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           on conflict(date) do update set
+             sonarr_fun_share = excluded.sonarr_fun_share,
+             radarr_fun_share = excluded.radarr_fun_share,
+             total_fun_share = excluded.total_fun_share,
+             sonarr_fun_files = excluded.sonarr_fun_files,
+             radarr_fun_files = excluded.radarr_fun_files,
+             total_files = excluded.total_files,
+             updated_at = excluded.updated_at`,
+        ).run(
+          date,
+          summary.sonarrFunShare,
+          summary.radarrFunShare,
+          summary.totalFunShare,
+          summary.sonarrFunFiles,
+          summary.radarrFunFiles,
+          summary.totalFiles,
+          iso,
+          iso,
+        );
+      },
+
+      summary(): StatsSummary {
+        const coverageHistory = db
+          .prepare(
+            `select
+               date,
+               sonarr_fun_share as sonarrFunShare,
+               radarr_fun_share as radarrFunShare,
+               total_fun_share as totalFunShare
+             from coverage_snapshots
+             order by date asc
+             limit 90`,
+          )
+          .all() as StatsSummary["coverageHistory"];
+        const dailyActivity = db
+          .prepare(
+            `select
+               substr(created_at, 1, 10) as date,
+               sum(case when action = 'analysis' then 1 else 0 end) as analyses,
+               sum(case when action = 'search' then 1 else 0 end) as searches,
+               sum(case when action = 'grab' then 1 else 0 end) as grabs,
+               sum(case when status = 'failed' then 1 else 0 end) as failed
+             from activity_log
+             group by substr(created_at, 1, 10)
+             order by date asc
+             limit 90`,
+          )
+          .all() as StatsSummary["dailyActivity"];
+        const totals = db
+          .prepare(
+            `select
+               sum(case when action = 'analysis' then 1 else 0 end) as analyses,
+               sum(case when action = 'search' then 1 else 0 end) as searches,
+               sum(case when action = 'grab' then 1 else 0 end) as grabs,
+               sum(case when status = 'failed' then 1 else 0 end) as failed
+             from activity_log`,
+          )
+          .get() as StatsSummary["totals"];
+
+        return {
+          coverageHistory,
+          dailyActivity,
+          totals: {
+            analyses: totals.analyses ?? 0,
+            searches: totals.searches ?? 0,
+            grabs: totals.grabs ?? 0,
+            failed: totals.failed ?? 0,
+          },
+        };
+      },
+
+      mediaSummary(): {
+        sonarrFunShare: number;
+        radarrFunShare: number;
+        totalFunShare: number;
+        sonarrFunFiles: number;
+        radarrFunFiles: number;
+        totalFiles: number;
+      } {
+        const row = db
+          .prepare(
+            `select
+               coalesce(sum(case when kind = 'series' then children_with_file else 0 end), 0) as sonarrFiles,
+               coalesce(sum(case when kind = 'series' then fun_children else 0 end), 0) as sonarrFunFiles,
+               coalesce(sum(case when kind = 'movie' then children_with_file else 0 end), 0) as radarrFiles,
+               coalesce(sum(case when kind = 'movie' then fun_children else 0 end), 0) as radarrFunFiles,
+               coalesce(sum(children_with_file), 0) as totalFiles,
+               coalesce(sum(fun_children), 0) as totalFunFiles
+             from media_items`,
+          )
+          .get() as {
+          sonarrFiles: number;
+          sonarrFunFiles: number;
+          radarrFiles: number;
+          radarrFunFiles: number;
+          totalFiles: number;
+          totalFunFiles: number;
+        };
+        return {
+          sonarrFunShare: row.sonarrFiles === 0 ? 0 : row.sonarrFunFiles / row.sonarrFiles,
+          radarrFunShare: row.radarrFiles === 0 ? 0 : row.radarrFunFiles / row.radarrFiles,
+          totalFunShare: row.totalFiles === 0 ? 0 : row.totalFunFiles / row.totalFiles,
+          sonarrFunFiles: row.sonarrFunFiles,
+          radarrFunFiles: row.radarrFunFiles,
+          totalFiles: row.totalFiles,
+        };
+      },
+    },
   };
 }
 
 function booleanToNullableInt(value: boolean | undefined): 0 | 1 | null {
   return typeof value === "boolean" ? (value ? 1 : 0) : null;
+}
+
+function toDateKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
