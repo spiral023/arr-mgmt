@@ -1,6 +1,7 @@
 import { ipcMain, shell } from "electron";
 import { analyzeSonarrSeries } from "./arr/analysis-service";
 import { RadarrClient } from "./arr/radarr-client";
+import { selectSonarrSeriesForAnalysis } from "./arr/sonarr-analysis-plan";
 import { SonarrClient } from "./arr/sonarr-client";
 import { getNonFunEpisodeIds, selectBestFunRelease } from "./arr/sonarr-operations";
 import { mapConcurrent } from "./async/map-concurrent";
@@ -26,7 +27,7 @@ export type IpcState = {
   repositories: ReturnType<typeof createRepositories>;
 };
 
-const ANALYSIS_CONCURRENCY = 16;
+const ANALYSIS_CONCURRENCY = 4;
 const EPISODE_LOAD_CONCURRENCY = 8;
 const SEARCH_CONCURRENCY = 12;
 const GRAB_CONCURRENCY = 4;
@@ -181,12 +182,21 @@ async function analyzeSonarrLibrary(state: IpcState, context: JobContext): Promi
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
   const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
   const seriesList = await client.getSeries();
+  const analyzedArrIds = new Set(state.repositories.mediaItems.listAnalyzedArrIds("series", instanceId));
+  const seriesToAnalyze = selectSonarrSeriesForAnalysis(seriesList, analyzedArrIds);
   const analyzedAt = new Date();
 
-  context.setProgressTotal(seriesList.length);
-  context.addEvent("info", `Loaded ${seriesList.length} Sonarr series`);
+  context.setProgressTotal(seriesToAnalyze.length);
+  if (seriesToAnalyze.length < seriesList.length) {
+    context.addEvent(
+      "info",
+      `Resuming Sonarr analysis: ${seriesList.length - seriesToAnalyze.length} already stored, ${seriesToAnalyze.length} remaining`,
+    );
+  } else {
+    context.addEvent("info", `Loaded ${seriesList.length} Sonarr series`);
+  }
 
-  await mapConcurrent(seriesList, ANALYSIS_CONCURRENCY, async (series) => {
+  await mapConcurrent(seriesToAnalyze, ANALYSIS_CONCURRENCY, async (series) => {
     try {
       const episodes = await client.getEpisodes(series.id, true);
       const item = analyzeSonarrSeries(series, episodes, analyzedAt);

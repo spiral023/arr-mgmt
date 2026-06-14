@@ -21,6 +21,8 @@ describe("repositories", () => {
 
     const mediaItemId = repos.mediaItems.upsertAnalysis(instanceId, analysis());
 
+    expect(repos.mediaItems.listAnalyzedArrIds("series", instanceId)).toEqual([7]);
+
     repos.activityLog.insert({
       action: "search",
       quotaType: "search",

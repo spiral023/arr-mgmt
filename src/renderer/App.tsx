@@ -13,6 +13,8 @@ import {
   searchSonarrSeries,
   subscribeToJobEvents,
 } from "./state/ipc-client";
+import { shouldRefreshSonarrRows } from "./state/refresh-policy";
+import { createRefreshScheduler } from "./state/refresh-scheduler";
 import { DashboardView } from "./views/DashboardView";
 import { JobsView } from "./views/JobsView";
 import { QuotaView } from "./views/QuotaView";
@@ -30,21 +32,36 @@ export function App() {
   const [kpis, setKpis] = useState<KpiItem[]>([]);
 
   useEffect(() => {
-    void refreshSonarrRows();
     void refreshKpis();
+    const scheduler = createRefreshScheduler(refreshKpis, { minimumDelayMs: 1_500 });
     const interval = window.setInterval(() => {
-      void refreshSonarrRows();
-      void refreshKpis();
+      scheduler.trigger();
     }, 5_000);
-    const unsubscribe = subscribeToJobEvents(() => {
-      void refreshSonarrRows();
-      void refreshKpis();
-    });
+    const unsubscribe = subscribeToJobEvents(() => scheduler.trigger());
     return () => {
       window.clearInterval(interval);
       unsubscribe();
+      scheduler.dispose();
     };
   }, []);
+
+  useEffect(() => {
+    if (!shouldRefreshSonarrRows(activeTab)) {
+      return;
+    }
+
+    void refreshSonarrRows();
+    const scheduler = createRefreshScheduler(refreshSonarrRows, { minimumDelayMs: 2_000 });
+    const interval = window.setInterval(() => {
+      scheduler.trigger();
+    }, 5_000);
+    const unsubscribe = subscribeToJobEvents(() => scheduler.trigger());
+    return () => {
+      window.clearInterval(interval);
+      unsubscribe();
+      scheduler.dispose();
+    };
+  }, [activeTab]);
 
   async function refreshSonarrRows() {
     const rows = await getSonarrRows();

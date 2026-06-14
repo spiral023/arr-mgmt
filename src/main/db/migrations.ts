@@ -119,6 +119,7 @@ const statements = [
     value_json text not null
   )`,
   "create index if not exists idx_activity_log_quota_created on activity_log(quota_type, created_at)",
+  "create index if not exists idx_activity_log_media_action_created on activity_log(media_item_id, action, created_at)",
   "create index if not exists idx_media_items_instance_kind on media_items(instance_id, kind)",
   "create index if not exists idx_release_candidates_media on release_candidates(media_item_id, child_arr_id)",
 ];

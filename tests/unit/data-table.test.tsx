@@ -47,4 +47,17 @@ describe("DataTable", () => {
     expect(screen.getByText("3 selected")).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Select Two" })).toBeChecked();
   });
+
+  it("does not mount every row when the data set is large", () => {
+    const rows: RowData[] = Array.from({ length: 500 }, (_, index) => ({
+      id: String(index),
+      title: `Row ${index}`,
+    }));
+    const columns: Array<ColumnDef<RowData, unknown>> = [{ accessorKey: "title", header: "Title" }];
+
+    render(<DataTable columns={columns} data={rows} getRowId={(row) => row.id} title="Rows" />);
+
+    expect(screen.getAllByRole("row").length).toBeLessThan(120);
+    expect(screen.queryByText("Row 499")).not.toBeInTheDocument();
+  });
 });

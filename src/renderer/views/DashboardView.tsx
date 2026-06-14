@@ -5,6 +5,7 @@ import { Activity, CheckCircle2, Clock, Database, Download, HardDrive, Search, S
 import { DataTable } from "../components/DataTable";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
 import { getLibrarySummary, getQuotaSummary, getRecentActivity, listJobs, subscribeToJobEvents } from "../state/ipc-client";
+import { createRefreshScheduler } from "../state/refresh-scheduler";
 import type { ActivityRowView, JobView } from "../../shared/ipc-contracts";
 
 type ActivityRow = ActivityRowView;
@@ -40,11 +41,13 @@ export function DashboardView() {
 
   useEffect(() => {
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 5_000);
-    const unsubscribe = subscribeToJobEvents(() => void refresh());
+    const scheduler = createRefreshScheduler(refresh, { minimumDelayMs: 1_500 });
+    const interval = window.setInterval(() => scheduler.trigger(), 5_000);
+    const unsubscribe = subscribeToJobEvents(() => scheduler.trigger());
     return () => {
       window.clearInterval(interval);
       unsubscribe();
+      scheduler.dispose();
     };
   }, []);
 

@@ -5,6 +5,7 @@ import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
 import { listJobEvents, listJobs, subscribeToJobEvents } from "../state/ipc-client";
+import { createRefreshScheduler } from "../state/refresh-scheduler";
 import type { JobEventView, JobStatus, JobView } from "../../shared/ipc-contracts";
 
 interface JobRow {
@@ -63,11 +64,13 @@ export function JobsView() {
 
   useEffect(() => {
     void refreshJobs();
-    const interval = window.setInterval(() => void refreshJobs(), 2_000);
-    const unsubscribe = subscribeToJobEvents(() => void refreshJobs());
+    const scheduler = createRefreshScheduler(refreshJobs, { minimumDelayMs: 1_000 });
+    const interval = window.setInterval(() => scheduler.trigger(), 2_000);
+    const unsubscribe = subscribeToJobEvents(() => scheduler.trigger());
     return () => {
       window.clearInterval(interval);
       unsubscribe();
+      scheduler.dispose();
     };
   }, [refreshJobs]);
 

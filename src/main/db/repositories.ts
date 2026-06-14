@@ -171,10 +171,31 @@ export function createRepositories(db: AppDatabase) {
         return row?.id;
       },
 
+      listAnalyzedArrIds(kind: "series" | "movie", instanceId: number): number[] {
+        const rows = db
+          .prepare(
+            `select arr_id as arrId
+             from media_items
+             where instance_id = ? and kind = ? and last_analyzed_at is not null
+             order by arr_id asc`,
+          )
+          .all(instanceId, kind) as Array<{ arrId: number }>;
+        return rows.map((row) => row.arrId);
+      },
+
       listSonarrRows(): SonarrSeriesTableRow[] {
         const rows = db
           .prepare(
-            `select
+            `with last_activity as (
+               select
+                 media_item_id,
+                 max(case when action = 'search' then created_at end) as lastSearched,
+                 max(case when action = 'grab' then created_at end) as lastGrabbed
+               from activity_log
+               where action in ('search', 'grab')
+               group by media_item_id
+             )
+             select
                mi.id,
                mi.arr_id as arrId,
                mi.title,
@@ -186,18 +207,11 @@ export function createRepositories(db: AppDatabase) {
                mi.total_size_bytes as totalSizeBytes,
                mi.fun_share as funShare,
                mi.last_analyzed_at as lastAnalyzed,
-               (
-                 select max(created_at)
-                 from activity_log a
-                 where a.media_item_id = mi.id and a.action = 'search'
-               ) as lastSearched,
-               (
-                 select max(created_at)
-                 from activity_log a
-                 where a.media_item_id = mi.id and a.action = 'grab'
-               ) as lastGrabbed
+               la.lastSearched,
+               la.lastGrabbed
              from media_items mi
              join instances i on i.id = mi.instance_id
+             left join last_activity la on la.media_item_id = mi.id
              where i.kind = 'sonarr' and mi.kind = 'series'
              order by mi.title collate nocase`,
           )

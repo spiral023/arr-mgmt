@@ -9,6 +9,7 @@ import type {
   SortingState,
   Updater,
 } from "@tanstack/react-table";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   flexRender,
   functionalUpdate,
@@ -22,6 +23,8 @@ import { clsx } from "clsx";
 
 const EMPTY_COLUMN_FILTERS: ColumnFiltersState = [];
 const EMPTY_SORTING: SortingState = [];
+const VIRTUALIZATION_THRESHOLD = 100;
+const VIRTUAL_ROW_HEIGHT = 42;
 
 export interface DataTableProps<TData extends object> {
   bulkActions?: (selectedRows: Array<Row<TData>>) => ReactNode;
@@ -119,6 +122,36 @@ export function DataTable<TData extends object>({
   const selectedRows = table.getSelectedRowModel().rows;
   const rows = table.getRowModel().rows;
   const columnCount = table.getAllLeafColumns().length;
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const shouldVirtualize = rows.length > VIRTUALIZATION_THRESHOLD;
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    enabled: shouldVirtualize,
+    estimateSize: () => VIRTUAL_ROW_HEIGHT,
+    getScrollElement: () => scrollContainerRef.current,
+    initialRect: { height: 640, width: 0 },
+    overscan: 12,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const fallbackVirtualIndexes = useMemo(
+    () =>
+      shouldVirtualize && virtualRows.length === 0
+        ? rows.slice(0, 50).map((_, index) => index)
+        : [],
+    [rows, shouldVirtualize, virtualRows.length],
+  );
+  const visibleRowIndexes = shouldVirtualize
+    ? virtualRows.length > 0
+      ? virtualRows.map((virtualRow) => virtualRow.index)
+      : fallbackVirtualIndexes
+    : rows.map((_, index) => index);
+  const paddingTop = shouldVirtualize && virtualRows.length > 0 ? virtualRows[0].start : 0;
+  const paddingBottom =
+    shouldVirtualize && virtualRows.length > 0
+      ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end
+      : shouldVirtualize
+        ? Math.max(0, rows.length - visibleRowIndexes.length) * VIRTUAL_ROW_HEIGHT
+        : 0;
   const selectedLabel = useMemo(() => {
     const count = selectedRows.length;
     return `${count} selected`;
@@ -200,7 +233,7 @@ export function DataTable<TData extends object>({
         </div>
       ) : null}
 
-      <div className="max-h-[64vh] overflow-auto">
+      <div className="max-h-[64vh] overflow-auto" ref={scrollContainerRef}>
         <table className="min-w-full border-separate border-spacing-0 text-left text-sm" onClickCapture={handleTableSelectionClick}>
           <thead className="sticky top-0 z-10 bg-ink-850 shadow-[0_1px_0_rgba(255,255,255,0.10)]">
             {table.getHeaderGroups().map((headerGroup) => (
@@ -242,20 +275,37 @@ export function DataTable<TData extends object>({
           </thead>
           <tbody>
             {rows.length > 0 ? (
-              rows.map((row) => (
-                <tr
-                  className="border-b border-white/5 bg-ink-900/70 transition-[background-color] duration-150 ease-out hover:bg-white/[0.035] data-[selected=true]:bg-signal-cyan/10"
-                  data-selected={row.getIsSelected()}
-                  data-row-id={row.id}
-                  key={row.id}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <td className="border-b border-white/5 px-3 py-2 align-middle text-ink-200" key={cell.id}>
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
-                  ))}
-                </tr>
-              ))
+              <>
+                {paddingTop > 0 ? (
+                  <tr aria-label="Rows above viewport">
+                    <td aria-label="Rows above viewport spacer" className="border-0 p-0" colSpan={columnCount} style={{ height: paddingTop }} />
+                  </tr>
+                ) : null}
+                {visibleRowIndexes.map((rowIndex) => {
+                  const row = rows[rowIndex];
+                  return (
+                    <tr
+                      className="border-b border-white/5 bg-ink-900/70 transition-[background-color] duration-150 ease-out hover:bg-white/[0.035] data-[selected=true]:bg-signal-cyan/10"
+                      data-index={rowIndex}
+                      data-selected={row.getIsSelected()}
+                      data-row-id={row.id}
+                      key={row.id}
+                      ref={shouldVirtualize ? rowVirtualizer.measureElement : undefined}
+                    >
+                      {row.getVisibleCells().map((cell) => (
+                        <td className="border-b border-white/5 px-3 py-2 align-middle text-ink-200" key={cell.id}>
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+                {paddingBottom > 0 ? (
+                  <tr aria-label="Rows below viewport">
+                    <td aria-label="Rows below viewport spacer" className="border-0 p-0" colSpan={columnCount} style={{ height: paddingBottom }} />
+                  </tr>
+                ) : null}
+              </>
             ) : (
               <tr>
                 <td className="px-4 py-12 text-center text-sm text-ink-400" colSpan={columnCount}>
