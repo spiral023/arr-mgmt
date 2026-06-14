@@ -4,7 +4,9 @@ import { RadarrClient } from "./arr/radarr-client";
 import { selectSonarrSeriesForAnalysis } from "./arr/sonarr-analysis-plan";
 import { SonarrClient } from "./arr/sonarr-client";
 import { getNonFunEpisodeIds, getNonFunMovieIds, selectBestFunRelease } from "./arr/sonarr-operations";
+import type { ArrRelease } from "./arr/arr-types";
 import { mapConcurrent } from "./async/map-concurrent";
+import { isFunReleaseGroup } from "../shared/fun";
 import type { createRepositories } from "./db/repositories";
 import type { InstanceStore } from "./instances/instance-store";
 import type { JobContext, JobRunner } from "./scheduler/job-runner";
@@ -47,6 +49,22 @@ const RADARR_ANALYSIS_YIELD_EVERY = 5;
 const EPISODE_LOAD_CONCURRENCY = 8;
 const SEARCH_CONCURRENCY = 12;
 const GRAB_CONCURRENCY = 4;
+const SEARCH_DEBUG_DETAIL_CAP = 30;
+
+/** Describes why the FuN* releases of one search result were not grabbable, for debug logging. */
+function describeRejectedFunReleases(releases: ArrRelease[]): string {
+  return releases
+    .map((release) => {
+      const flags = [
+        release.rejected === true ? "rejected" : null,
+        release.downloadAllowed === false ? "downloadNotAllowed" : null,
+      ].filter(Boolean);
+      const rejections = (release.rejections ?? []).join("; ");
+      const detail = [flags.join(","), rejections].filter((part) => part && part.length > 0).join(" — ");
+      return `"${release.title ?? "?"}"${detail ? ` [${detail}]` : ""}`;
+    })
+    .join(" | ");
+}
 
 export function registerIpcHandlers(state: IpcState): void {
   ipcMain.handle("jobs:list", (): JobView[] => state.jobRunner.listJobs());
@@ -427,6 +445,13 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
   });
   const episodeTasks = seriesEpisodes.flat();
   let candidatesFound = 0;
+  let searched = 0;
+  let skippedByCooldown = 0;
+  let withReleases = 0;
+  let withFunGroup = 0;
+  let onlyRejectedFun = 0;
+  let errors = 0;
+  let detailLogged = 0;
 
   context.setProgressTotal(episodeTasks.length);
   context.addEvent("info", `Searching ${episodeTasks.length} non-FuN episodes with concurrency ${SEARCH_CONCURRENCY}`);
@@ -452,6 +477,7 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
         status: "skipped",
         createdAt: new Date(),
       });
+      skippedByCooldown += 1;
       context.incrementProgress();
       return;
     }
@@ -467,6 +493,14 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
     try {
       const releases = await client.getReleasesForEpisode(task.episodeId);
       context.throwIfCancelled();
+      searched += 1;
+      if (releases.length > 0) {
+        withReleases += 1;
+      }
+      const funReleases = releases.filter((release) => isFunReleaseGroup(release.releaseGroup));
+      if (funReleases.length > 0) {
+        withFunGroup += 1;
+      }
       const candidate = selectBestFunRelease(releases);
       if (candidate) {
         state.repositories.releaseCandidates.insert({
@@ -477,15 +511,63 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
           foundAt: new Date(),
         });
         candidatesFound += 1;
+      } else if (funReleases.length > 0) {
+        onlyRejectedFun += 1;
+        if (detailLogged < SEARCH_DEBUG_DETAIL_CAP) {
+          detailLogged += 1;
+          context.addEvent(
+            "warning",
+            `Episode ${task.episodeId}: ${funReleases.length} FuN* release(s) found but none grabbable — ${describeRejectedFunReleases(funReleases)}`,
+          );
+        }
       }
       quota.complete(reservation.activityId!, "success", candidate ? "FuN* candidate found" : "No FuN* candidate");
       context.incrementProgress();
     } catch (error) {
-      quota.complete(reservation.activityId!, "failed", error instanceof Error ? error.message : String(error));
+      errors += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      quota.complete(reservation.activityId!, "failed", message);
+      if (detailLogged < SEARCH_DEBUG_DETAIL_CAP) {
+        detailLogged += 1;
+        context.addEvent("error", `Episode ${task.episodeId} search failed: ${message}`);
+      }
       context.incrementProgress({ failed: true });
     }
   });
-  context.addEvent("info", `Stored ${candidatesFound} FuN* candidates`);
+  if (detailLogged >= SEARCH_DEBUG_DETAIL_CAP) {
+    context.addEvent("info", `Per-episode detail logs capped at ${SEARCH_DEBUG_DETAIL_CAP} entries.`);
+  }
+  context.addEvent(
+    "info",
+    `Search summary — searched ${searched}, skipped by cooldown ${skippedByCooldown}, errors ${errors}; ` +
+      `${withReleases} returned releases, ${withFunGroup} had a FuN* release, ${onlyRejectedFun} had only non-grabbable FuN* releases; stored ${candidatesFound} candidates.`,
+  );
+}
+
+type GrabTarget = { release: ArrRelease; strategy: "guid" | "title" | "best-fun" };
+
+/**
+ * Resolves which freshly-fetched release to grab for a stored candidate. Sonarr/Radarr only let you
+ * grab a release that is still in their short-lived server-side release cache, so we re-query the
+ * indexer at grab time and re-match the stored candidate against the current results. We prefer the
+ * exact same release (guid, then title), but fall back to the best currently-offered FuN* release so
+ * a day-old candidate can still be grabbed as long as a suitable release is on the indexer.
+ */
+function resolveGrabTarget(fresh: ArrRelease[], stored: ArrRelease): GrabTarget | undefined {
+  if (stored.guid) {
+    const byGuid = fresh.find((item) => item.guid === stored.guid);
+    if (byGuid) {
+      return { release: byGuid, strategy: "guid" };
+    }
+  }
+  if (stored.title) {
+    const byTitle = fresh.find((item) => item.title === stored.title);
+    if (byTitle) {
+      return { release: byTitle, strategy: "title" };
+    }
+  }
+  const best = selectBestFunRelease(fresh);
+  return best ? { release: best, strategy: "best-fun" } : undefined;
 }
 
 async function grabSonarrCandidates(state: IpcState, input: SonarrSeriesActionInput, context: JobContext): Promise<void> {
@@ -531,17 +613,25 @@ async function grabSonarrCandidates(state: IpcState, input: SonarrSeriesActionIn
     try {
       const fresh = await client.getReleasesForEpisode(candidate.childArrId);
       context.throwIfCancelled();
-      const match = release.guid ? fresh.find((item) => item.guid === release.guid) : undefined;
-      if (!match) {
+      const target = resolveGrabTarget(fresh, release);
+      if (!target) {
         throw new Error(
-          `Release no longer offered by the indexer (guid=${release.guid ?? "?"}). Sonarr only keeps a release grabbable for a short time after a search — re-run a FuN* search, then grab promptly.`,
+          `No grabbable FuN* release among ${fresh.length} current results for episode ${candidate.childArrId} ` +
+            `(looked for guid=${release.guid ?? "?"}, title="${releaseLabel}"). Re-run a FuN* search.`,
         );
       }
-      await client.grabRelease(match);
+      const grabbedLabel = target.release.title ?? releaseLabel;
+      if (target.strategy !== "guid") {
+        context.addEvent(
+          "warning",
+          `Stored release not matched by guid; grabbing via ${target.strategy} match: "${grabbedLabel}" (indexer=${target.release.indexer ?? "?"})`,
+        );
+      }
+      await client.grabRelease(target.release);
       context.throwIfCancelled();
       state.repositories.releaseCandidates.delete(candidate.id);
-      quota.complete(reservation.activityId!, "success", releaseLabel);
-      context.addEvent("info", `Grabbed "${releaseLabel}" (re-fetched release, POST /release) and removed it from the candidate store`);
+      quota.complete(reservation.activityId!, "success", grabbedLabel);
+      context.addEvent("info", `Grabbed "${grabbedLabel}" (re-fetched, ${target.strategy} match) and removed it from the candidate store`);
       context.incrementProgress();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -565,6 +655,13 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
     movieId,
   }));
   let candidatesFound = 0;
+  let searched = 0;
+  let skippedByCooldown = 0;
+  let withReleases = 0;
+  let withFunGroup = 0;
+  let onlyRejectedFun = 0;
+  let errors = 0;
+  let detailLogged = 0;
 
   context.setProgressTotal(movieTasks.length);
   context.addEvent("info", `Searching ${movieTasks.length} non-FuN Radarr movies with concurrency ${SEARCH_CONCURRENCY}`);
@@ -590,6 +687,7 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
         status: "skipped",
         createdAt: new Date(),
       });
+      skippedByCooldown += 1;
       context.incrementProgress();
       return;
     }
@@ -605,6 +703,14 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
     try {
       const releases = await client.getReleasesForMovie(task.movieId);
       context.throwIfCancelled();
+      searched += 1;
+      if (releases.length > 0) {
+        withReleases += 1;
+      }
+      const funReleases = releases.filter((release) => isFunReleaseGroup(release.releaseGroup));
+      if (funReleases.length > 0) {
+        withFunGroup += 1;
+      }
       const candidate = selectBestFunRelease(releases);
       if (candidate) {
         state.repositories.releaseCandidates.insert({
@@ -615,15 +721,37 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
           foundAt: new Date(),
         });
         candidatesFound += 1;
+      } else if (funReleases.length > 0) {
+        onlyRejectedFun += 1;
+        if (detailLogged < SEARCH_DEBUG_DETAIL_CAP) {
+          detailLogged += 1;
+          context.addEvent(
+            "warning",
+            `Movie ${task.movieId}: ${funReleases.length} FuN* release(s) found but none grabbable — ${describeRejectedFunReleases(funReleases)}`,
+          );
+        }
       }
       quota.complete(reservation.activityId!, "success", candidate ? "FuN* movie candidate found" : "No FuN* movie candidate");
       context.incrementProgress();
     } catch (error) {
-      quota.complete(reservation.activityId!, "failed", error instanceof Error ? error.message : String(error));
+      errors += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      quota.complete(reservation.activityId!, "failed", message);
+      if (detailLogged < SEARCH_DEBUG_DETAIL_CAP) {
+        detailLogged += 1;
+        context.addEvent("error", `Movie ${task.movieId} search failed: ${message}`);
+      }
       context.incrementProgress({ failed: true });
     }
   });
-  context.addEvent("info", `Stored ${candidatesFound} Radarr FuN* candidates`);
+  if (detailLogged >= SEARCH_DEBUG_DETAIL_CAP) {
+    context.addEvent("info", `Per-movie detail logs capped at ${SEARCH_DEBUG_DETAIL_CAP} entries.`);
+  }
+  context.addEvent(
+    "info",
+    `Search summary — searched ${searched}, skipped by cooldown ${skippedByCooldown}, errors ${errors}; ` +
+      `${withReleases} returned releases, ${withFunGroup} had a FuN* release, ${onlyRejectedFun} had only non-grabbable FuN* releases; stored ${candidatesFound} candidates.`,
+  );
 }
 
 async function grabRadarrCandidates(state: IpcState, input: RadarrMovieActionInput, context: JobContext): Promise<void> {
@@ -669,17 +797,25 @@ async function grabRadarrCandidates(state: IpcState, input: RadarrMovieActionInp
     try {
       const fresh = await client.getReleasesForMovie(candidate.childArrId);
       context.throwIfCancelled();
-      const match = release.guid ? fresh.find((item) => item.guid === release.guid) : undefined;
-      if (!match) {
+      const target = resolveGrabTarget(fresh, release);
+      if (!target) {
         throw new Error(
-          `Release no longer offered by the indexer (guid=${release.guid ?? "?"}). Radarr only keeps a release grabbable for a short time after a search — re-run a FuN* search, then grab promptly.`,
+          `No grabbable FuN* release among ${fresh.length} current results for movie ${candidate.childArrId} ` +
+            `(looked for guid=${release.guid ?? "?"}, title="${releaseLabel}"). Re-run a FuN* search.`,
         );
       }
-      await client.grabRelease(match);
+      const grabbedLabel = target.release.title ?? releaseLabel;
+      if (target.strategy !== "guid") {
+        context.addEvent(
+          "warning",
+          `Stored release not matched by guid; grabbing via ${target.strategy} match: "${grabbedLabel}" (indexer=${target.release.indexer ?? "?"})`,
+        );
+      }
+      await client.grabRelease(target.release);
       context.throwIfCancelled();
       state.repositories.releaseCandidates.delete(candidate.id);
-      quota.complete(reservation.activityId!, "success", releaseLabel);
-      context.addEvent("info", `Grabbed "${releaseLabel}" (re-fetched release, POST /release) and removed it from the candidate store`);
+      quota.complete(reservation.activityId!, "success", grabbedLabel);
+      context.addEvent("info", `Grabbed "${grabbedLabel}" (re-fetched, ${target.strategy} match) and removed it from the candidate store`);
       context.incrementProgress();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
