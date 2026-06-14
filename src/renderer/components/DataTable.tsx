@@ -1,10 +1,12 @@
 import type { ReactNode } from "react";
 import { useMemo, useRef, useState } from "react";
 import type {
+  Column,
   ColumnDef,
   ColumnFiltersState,
   OnChangeFn,
   Row,
+  RowData,
   RowSelectionState,
   SortingState,
   Table,
@@ -20,13 +22,28 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown, Columns3, Search } from "lucide-react";
 import { clsx } from "clsx";
+
+// Per-column display hints. `sticky: "left"` pins the column while the table
+// scrolls horizontally; `align` controls horizontal cell alignment.
+declare module "@tanstack/react-table" {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface ColumnMeta<TData extends RowData, TValue> {
+    align?: "left" | "center" | "right";
+    sticky?: "left";
+  }
+}
 
 const EMPTY_COLUMN_FILTERS: ColumnFiltersState = [];
 const EMPTY_SORTING: SortingState = [];
 const VIRTUALIZATION_THRESHOLD = 100;
-const VIRTUAL_ROW_HEIGHT = 42;
+const VIRTUAL_ROW_HEIGHT = 46;
+
+// Solid row backgrounds so pinned cells stay opaque while scrolling.
+const ROW_BG = "bg-ink-925";
+const ROW_HOVER_BG = "group-hover:bg-ink-850";
+const ROW_SELECTED_BG = "group-data-[selected=true]:bg-[#13242b]";
 
 export interface DataTableProps<TData extends object> {
   bulkActions?: (selectedRows: Array<Row<TData>>) => ReactNode;
@@ -132,6 +149,20 @@ export function DataTable<TData extends object>({
   const selectedRows = table.getSelectedRowModel().rows;
   const rows = table.getRowModel().rows;
   const columnCount = table.getAllLeafColumns().length;
+
+  // Accumulate left offsets for pinned columns (assumed leftmost & contiguous).
+  const stickyOffsets = useMemo(() => {
+    const offsets = new Map<string, number>();
+    let acc = 0;
+    for (const column of table.getVisibleLeafColumns()) {
+      if (column.columnDef.meta?.sticky === "left") {
+        offsets.set(column.id, acc);
+        acc += column.getSize();
+      }
+    }
+    return offsets;
+  }, [table, columnVisibility]);
+
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const shouldVirtualize = rows.length > VIRTUALIZATION_THRESHOLD;
   const rowVirtualizer = useVirtualizer({
@@ -165,6 +196,7 @@ export function DataTable<TData extends object>({
   const selectedLabel = useMemo(() => {
     return selectedSummary ? selectedSummary(selectedRows) : `${selectedRows.length} selected`;
   }, [selectedRows, selectedSummary]);
+  const hasSelection = selectedRows.length > 0;
 
   function handleTableSelectionClick(event: React.MouseEvent<HTMLTableElement>) {
     if (!isCheckboxClick(event.target)) {
@@ -211,70 +243,91 @@ export function DataTable<TData extends object>({
   }
 
   return (
-    <section className="overflow-hidden rounded-lg border border-white/10 bg-ink-900/80 shadow-surface">
-      <div className="border-b border-white/10 bg-ink-900/95 px-4 py-3">
+    <section className="overflow-hidden rounded-xl bg-ink-925 shadow-card">
+      {/* Card header: title + prominent search */}
+      <div className="border-b border-white/[0.06] px-4 py-3">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
-            <h2 className="truncate text-base font-semibold text-white">{title}</h2>
-            {description ? <p className="mt-1 text-sm text-ink-400">{description}</p> : null}
+            <h2 className="truncate text-[15px] font-semibold text-white">{title}</h2>
+            {description ? <p className="mt-0.5 text-[13px] text-ink-500">{description}</p> : null}
           </div>
-          <div className="flex flex-col gap-2 md:flex-row md:items-center">
-            <label className="relative block min-w-64">
-              <span className="sr-only">{searchPlaceholder}</span>
-              <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
-              <input
-                className="h-10 w-full rounded-md border border-white/10 bg-ink-950 pl-9 pr-3 text-sm text-ink-200 outline-none shadow-surface transition-[background-color,border-color,box-shadow] duration-150 ease-out placeholder:text-ink-400 focus:border-signal-cyan focus:ring-2 focus:ring-signal-cyan/30"
-                onChange={(event) => handleGlobalFilterChange(event.target.value)}
-                placeholder={searchPlaceholder}
-                type="search"
-                value={resolvedGlobalFilter}
-              />
-            </label>
-            {enableColumnVisibility ? <ColumnVisibilityMenu open={columnMenuOpen} onOpenChange={setColumnMenuOpen} table={table} /> : null}
-            {filters}
-          </div>
+          <label className="relative block w-full min-w-0 md:w-72">
+            <span className="sr-only">{searchPlaceholder}</span>
+            <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-500" />
+            <input
+              className="h-9 w-full rounded-md border border-white/10 bg-ink-950 pl-9 pr-3 text-[13px] text-ink-200 outline-none transition-[border-color,box-shadow] duration-150 ease-out placeholder:text-ink-500 focus:border-signal-cyan/60 focus:ring-2 focus:ring-signal-cyan/25"
+              onChange={(event) => handleGlobalFilterChange(event.target.value)}
+              placeholder={searchPlaceholder}
+              type="search"
+              value={resolvedGlobalFilter}
+            />
+          </label>
         </div>
+
+        {/* Filter row: chips/dropdowns (left) + column visibility (right) */}
+        {filters || enableColumnVisibility ? (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">{filters}</div>
+            {enableColumnVisibility ? <ColumnVisibilityMenu open={columnMenuOpen} onOpenChange={setColumnMenuOpen} table={table} /> : null}
+          </div>
+        ) : null}
       </div>
 
-      {bulkActions ? (
-        <div className="flex flex-col gap-2 border-b border-white/10 bg-ink-850/80 px-4 py-2 md:flex-row md:items-center md:justify-between">
-          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-ink-400">{selectedLabel}</span>
+      {/* Selection action bar — only present when rows are selected */}
+      {bulkActions && hasSelection ? (
+        <div className="flex animate-fade-up flex-col gap-2 border-b border-white/[0.06] bg-signal-cyan/[0.04] px-4 py-2 md:flex-row md:items-center md:justify-between">
+          <span className="inline-flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.06em] text-signal-cyan">
+            <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-signal-cyan" />
+            {selectedLabel}
+          </span>
           <div className="flex flex-wrap gap-2">{bulkActions(selectedRows)}</div>
         </div>
       ) : null}
 
       <div className="max-h-[64vh] overflow-auto" ref={scrollContainerRef}>
-        <table className="min-w-full border-separate border-spacing-0 text-left text-sm" onClickCapture={handleTableSelectionClick}>
-          <thead className="sticky top-0 z-10 bg-ink-850 shadow-[0_1px_0_rgba(255,255,255,0.10)]">
+        <table className="min-w-full border-separate border-spacing-0 text-left text-[13px]" onClickCapture={handleTableSelectionClick}>
+          <thead>
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => {
-                  const sortDirection = header.column.getIsSorted();
-                  const SortIcon = sortDirection === "asc" ? ArrowUp : sortDirection === "desc" ? ArrowDown : ArrowUpDown;
-
+                  const sorted = header.column.getIsSorted();
+                  const SortIcon = sorted === "asc" ? ArrowUp : sorted === "desc" ? ArrowDown : ChevronsUpDown;
+                  const align = header.column.columnDef.meta?.align ?? "left";
+                  const stickyLeft = stickyOffsets.get(header.column.id);
+                  const isSticky = stickyLeft !== undefined;
                   const headerContent = flexRender(header.column.columnDef.header, header.getContext());
 
                   return (
                     <th
-                      className="whitespace-nowrap border-b border-white/10 px-3 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-ink-400"
+                      className={clsx(
+                        "sticky top-0 whitespace-nowrap border-b border-white/[0.08] bg-ink-925 px-3 py-2.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500",
+                        align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left",
+                        isSticky ? "z-30" : "z-20",
+                      )}
                       key={header.id}
-                      style={{ width: header.getSize() }}
+                      style={{ width: header.getSize(), left: isSticky ? stickyLeft : undefined }}
                     >
                       {header.isPlaceholder ? null : header.column.getCanSort() ? (
                         <button
                           className={clsx(
-                            "group inline-flex min-h-10 items-center gap-2 rounded px-1 text-left outline-none",
-                            "transition-[background-color,color,transform] duration-150 ease-out active:scale-[0.98]",
-                            "cursor-pointer hover:bg-white/[0.04] hover:text-ink-200 focus-visible:ring-2 focus-visible:ring-signal-cyan/30",
+                            "group/sort inline-flex h-6 items-center gap-1.5 rounded text-left outline-none",
+                            "transition-colors duration-150 ease-out hover:text-ink-200 focus-visible:text-ink-200",
+                            align === "right" && "flex-row-reverse",
                           )}
                           onClick={header.column.getToggleSortingHandler()}
                           type="button"
                         >
-                          {headerContent}
-                          <SortIcon aria-hidden="true" className="h-3.5 w-3.5 text-ink-400 group-hover:text-ink-200" />
+                          <span>{headerContent}</span>
+                          <SortIcon
+                            aria-hidden="true"
+                            className={clsx(
+                              "h-3 w-3 shrink-0 transition-opacity duration-150",
+                              sorted ? "text-signal-cyan opacity-100" : "text-ink-500 opacity-0 group-hover/sort:opacity-70",
+                            )}
+                          />
                         </button>
                       ) : (
-                        <div className="inline-flex min-h-10 items-center gap-2 px-1">{headerContent}</div>
+                        <span className="inline-flex h-6 items-center">{headerContent}</span>
                       )}
                     </th>
                   );
@@ -294,18 +347,35 @@ export function DataTable<TData extends object>({
                   const row = rows[rowIndex];
                   return (
                     <tr
-                      className="border-b border-white/5 bg-ink-900/70 transition-[background-color] duration-150 ease-out hover:bg-white/[0.035] data-[selected=true]:bg-signal-cyan/10"
+                      className={clsx(
+                        "group transition-colors duration-150 ease-out",
+                        ROW_BG,
+                        "hover:bg-ink-850 data-[selected=true]:bg-[#13242b]",
+                      )}
                       data-index={rowIndex}
                       data-selected={row.getIsSelected()}
                       data-row-id={row.id}
                       key={row.id}
                       ref={shouldVirtualize ? rowVirtualizer.measureElement : undefined}
                     >
-                      {row.getVisibleCells().map((cell) => (
-                        <td className="border-b border-white/5 px-3 py-2 align-middle text-ink-200" key={cell.id}>
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </td>
-                      ))}
+                      {row.getVisibleCells().map((cell) => {
+                        const align = cell.column.columnDef.meta?.align ?? "left";
+                        const stickyLeft = stickyOffsets.get(cell.column.id);
+                        const isSticky = stickyLeft !== undefined;
+                        return (
+                          <td
+                            className={clsx(
+                              "border-b border-white/[0.05] px-3 py-2.5 align-middle text-ink-200",
+                              align === "right" ? "text-right tabular-nums" : align === "center" ? "text-center" : "text-left",
+                              isSticky && ["sticky z-10", ROW_BG, ROW_HOVER_BG, ROW_SELECTED_BG],
+                            )}
+                            key={cell.id}
+                            style={{ left: isSticky ? stickyLeft : undefined }}
+                          >
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </td>
+                        );
+                      })}
                     </tr>
                   );
                 })}
@@ -317,7 +387,7 @@ export function DataTable<TData extends object>({
               </>
             ) : (
               <tr>
-                <td className="px-4 py-12 text-center text-sm text-ink-400" colSpan={columnCount}>
+                <td className="px-4 py-16 text-center text-[13px] text-ink-500" colSpan={columnCount}>
                   {emptyMessage}
                 </td>
               </tr>
@@ -338,34 +408,32 @@ function ColumnVisibilityMenu<TData extends object>({
   open: boolean;
   table: Table<TData>;
 }) {
-  const hideableColumns = table.getAllLeafColumns().reduce<Array<(typeof table)["getAllLeafColumns"] extends () => Array<infer TColumn> ? TColumn : never>>(
-    (result, column) => {
-      if (column.getCanHide()) {
-        result.push(column);
-      }
-      return result;
-    },
-    [],
-  );
+  const hideableColumns = table.getAllLeafColumns().reduce<Array<Column<TData, unknown>>>((result, column) => {
+    if (column.getCanHide()) {
+      result.push(column);
+    }
+    return result;
+  }, []);
 
   return (
     <div className="relative">
       <button
         aria-expanded={open}
         aria-label="Show or hide columns"
-        className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-md border border-white/10 bg-ink-950 px-3 text-sm text-ink-200 shadow-surface outline-none transition-[background-color,border-color,box-shadow,scale] duration-150 ease-out hover:bg-white/[0.06] focus-visible:border-signal-cyan focus-visible:ring-2 focus-visible:ring-signal-cyan/30 active:scale-[0.96]"
+        className="inline-flex h-9 items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.02] px-3 text-[13px] font-medium text-ink-300 shadow-surface outline-none transition-[background-color,border-color,box-shadow,scale] duration-150 ease-out hover:bg-white/[0.07] hover:text-white focus-visible:ring-2 focus-visible:ring-signal-cyan/40 active:scale-[0.96]"
         onClick={() => onOpenChange((current) => !current)}
         type="button"
       >
         <Columns3 aria-hidden="true" className="h-4 w-4" />
+        <span className="hidden sm:inline">Columns</span>
       </button>
       {open ? (
-        <div className="absolute right-0 z-30 mt-2 max-h-80 w-56 overflow-auto rounded-lg bg-ink-900 p-2 shadow-[0_0_0_1px_rgba(255,255,255,0.10),0_18px_48px_rgba(0,0,0,0.42)]">
+        <div className="absolute right-0 z-50 mt-2 max-h-80 w-56 origin-top-right animate-fade-up overflow-auto rounded-lg bg-ink-900 p-1.5 shadow-popover">
           {hideableColumns.map((column) => {
             const label = getColumnLabel(column.columnDef.header, column.id);
             return (
               <label
-                className="flex min-h-10 items-center gap-2 rounded-md px-2 text-sm text-ink-200 transition-[background-color] duration-150 ease-out hover:bg-white/[0.05]"
+                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-ink-200 transition-[background-color] duration-150 ease-out hover:bg-white/[0.06]"
                 key={column.id}
               >
                 <input
@@ -392,7 +460,6 @@ function isCheckboxClick(target: EventTarget): target is HTMLInputElement {
   const element = target as Partial<HTMLInputElement> | null;
   return element?.type === "checkbox" && typeof element.checked === "boolean";
 }
-
 
 function useControlledChange<TValue>(
   currentValue: TValue,

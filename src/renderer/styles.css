@@ -4,17 +4,25 @@
 
 :root {
   color-scheme: dark;
-  background: #090a0b;
+  background: #0b0c0f;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 body {
   margin: 0;
   min-width: 100vw;
   min-height: 100vh;
-  background: #090a0b;
+  /* Subtle depth: a faint cool glow at the top, fading into the neutral canvas. */
+  background:
+    radial-gradient(120% 80% at 50% -10%, rgba(86, 184, 207, 0.06), transparent 60%),
+    #0b0c0f;
+  background-attachment: fixed;
+  color: #dde2e9;
   font-variant-numeric: tabular-nums;
+  /* Avoid accidental horizontal page scroll; tables scroll within themselves. */
+  overflow-x: hidden;
 }
 
 button,
@@ -22,4 +30,50 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+::selection {
+  background: rgba(86, 184, 207, 0.28);
+  color: #ffffff;
+}
+
+/* Quiet, theme-matched scrollbars for the dense data surfaces. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }

@@ -11,11 +11,12 @@ export function ReleaseGroupBadge({ group, isFun }: ReleaseGroupBadgeProps) {
   return (
     <span
       className={clsx(
-        "inline-flex h-7 max-w-36 items-center rounded border px-2 font-mono text-xs font-semibold tabular-nums",
+        "inline-flex h-[22px] max-w-[9rem] items-center rounded-md border px-2 font-mono text-xs font-medium",
         isFun
-          ? "border-signal-green/30 bg-signal-green/10 text-signal-green"
-          : "border-white/10 bg-ink-800/80 text-ink-200",
+          ? "border-signal-green/25 bg-signal-green/[0.08] text-signal-green"
+          : "border-white/[0.08] bg-white/[0.03] text-ink-300",
       )}
+      title={label}
     >
       <span className="truncate">{label}</span>
     </span>

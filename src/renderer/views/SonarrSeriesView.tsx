@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ColumnDef, ColumnFiltersState, Row } from "@tanstack/react-table";
 import { ExternalLink, Eye, Radar, Search, Zap } from "lucide-react";
+import { clsx } from "clsx";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
@@ -58,6 +59,7 @@ export function SonarrSeriesView({
             type="checkbox"
           />
         ),
+        enableHiding: false,
         enableSorting: false,
         header: ({ table }) => (
           <input
@@ -69,13 +71,16 @@ export function SonarrSeriesView({
           />
         ),
         id: "select",
-        size: 48,
+        meta: { sticky: "left" },
+        size: 44,
       },
       {
         accessorKey: "title",
-        cell: ({ getValue }) => <span className="font-semibold text-white">{getValue<string>()}</span>,
+        cell: ({ getValue }) => <TitleCell value={getValue<string>()} />,
+        enableHiding: false,
         header: "Title",
-        size: 260,
+        meta: { sticky: "left" },
+        size: 248,
       },
       {
         accessorKey: "monitored",
@@ -88,55 +93,59 @@ export function SonarrSeriesView({
         accessorKey: "episodes",
         cell: ({ getValue }) => <NumberCell value={getValue<number>()} />,
         header: "Episodes",
-        size: 104,
+        meta: { align: "right" },
+        size: 100,
       },
       {
         accessorKey: "files",
         cell: ({ getValue }) => <NumberCell value={getValue<number>()} />,
         filterFn: positiveNumberFilter,
         header: "Files",
-        size: 88,
+        meta: { align: "right" },
+        size: 84,
       },
       {
         accessorKey: "totalSizeBytes",
-        cell: ({ getValue }) => <NumberCell value={formatBytes(getValue<number>())} />,
+        cell: ({ getValue }) => <NumberCell muted value={formatBytes(getValue<number>())} />,
         header: "Total size",
-        size: 128,
+        meta: { align: "right" },
+        size: 120,
       },
       {
         accessorKey: "funFiles",
         cell: ({ getValue }) => <NumberCell tone="good" value={getValue<number>()} />,
         filterFn: positiveNumberFilter,
         header: "FuN* files",
-        size: 112,
+        meta: { align: "right" },
+        size: 108,
       },
       {
         accessorKey: "funShare",
-        cell: ({ getValue }) => {
-          const value = getValue<number>();
-          return <NumberCell tone={value < 0.7 ? "danger" : value < 1 ? "warning" : "good"} value={formatPercent(value)} />;
-        },
+        cell: ({ getValue }) => <ShareCell value={getValue<number>()} />,
         filterFn: funShareFilter,
         header: "FuN* share",
-        size: 120,
+        meta: { align: "right" },
+        size: 132,
       },
       {
         accessorKey: "nonFunFiles",
-        cell: ({ getValue }) => <NumberCell tone={getValue<number>() > 0 ? "warning" : "default"} value={getValue<number>()} />,
+        cell: ({ getValue }) => <CountChip tone="warning" value={getValue<number>()} />,
         filterFn: positiveNumberFilter,
         header: "Non-FuN",
+        meta: { align: "right" },
         size: 104,
       },
       {
         accessorKey: "pendingFunCandidates",
-        cell: ({ getValue }) => <NumberCell tone={getValue<number>() > 0 ? "good" : "default"} value={getValue<number>()} />,
+        cell: ({ getValue }) => <CountChip tone="info" value={getValue<number>()} />,
         filterFn: positiveNumberFilter,
         header: "Pending FuN*",
-        size: 128,
+        meta: { align: "right" },
+        size: 124,
       },
-      { accessorKey: "lastAnalyzed", header: "Last analyzed", size: 150 },
-      { accessorKey: "lastSearched", header: "Last searched", size: 150 },
-      { accessorKey: "lastGrabbed", header: "Last grabbed", size: 150 },
+      { accessorKey: "lastAnalyzed", cell: ({ getValue }) => <DateCell value={getValue<string>()} />, header: "Last analyzed", size: 144 },
+      { accessorKey: "lastSearched", cell: ({ getValue }) => <DateCell value={getValue<string>()} />, header: "Last searched", size: 144 },
+      { accessorKey: "lastGrabbed", cell: ({ getValue }) => <DateCell value={getValue<string>()} />, header: "Last grabbed", size: 144 },
       {
         accessorKey: "status",
         cell: ({ getValue }) => {
@@ -148,63 +157,46 @@ export function SonarrSeriesView({
       },
       {
         cell: ({ row }) => (
-          <div className="flex gap-2">
-            <IconButton className="px-0" icon={Eye} label={`Open details for ${row.original.title}`} onClick={() => setDetailsRow(row.original)} />
+          <div className="flex justify-end gap-1">
+            <IconButton className="px-2" icon={Eye} label={`Open details for ${row.original.title}`} onClick={() => setDetailsRow(row.original)} />
             <IconButton
-              className="px-0"
+              className="px-2"
               icon={ExternalLink}
               label={`Open ${row.original.title} in Sonarr`}
               onClick={() => onOpenInSonarr?.(row.original.arrId, row.original.titleSlug)}
             />
           </div>
         ),
+        enableHiding: false,
         enableSorting: false,
         header: "Actions",
         id: "actions",
-        size: 112,
+        meta: { align: "right" },
+        size: 104,
       },
     ],
     [onOpenInSonarr],
   );
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface md:flex-row md:items-center md:justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-white">Sonarr Analysis</h2>
-          <p className="mt-1 text-sm text-ink-400">{statusMessage}</p>
-        </div>
-        <IconButton disabled={analyzing} icon={Radar} label="Analyze all Sonarr series" onClick={() => onAnalyze?.()} tone="success">
-          {analyzing ? "Analyzing..." : "Analyze all"}
-        </IconButton>
-      </div>
+    <div className="flex flex-col gap-4">
+      <AnalysisSection analyzing={analyzing} onAnalyze={() => onAnalyze?.()} statusMessage={statusMessage} title="Sonarr Analysis" />
       <DataTable
         bulkActions={(selectedRows) => (
           <>
             <IconButton
-              disabled={selectedRows.length === 0 || analyzing}
+              disabled={analyzing}
               icon={Radar}
               label="Analyze selected series"
               onClick={() => onAnalyze?.(selectedRows.map((row) => row.original.arrId))}
-              tone="success"
+              tone="primary"
             >
               Analyze selected
             </IconButton>
-            <IconButton
-              disabled={selectedRows.length === 0}
-              icon={Search}
-              label="Search selected non-FuN series"
-              onClick={() => onSearch?.(selectedRows.map((row) => row.original.arrId))}
-            >
+            <IconButton icon={Search} label="Search selected non-FuN series" onClick={() => onSearch?.(selectedRows.map((row) => row.original.arrId))}>
               Search selected
             </IconButton>
-            <IconButton
-              disabled={selectedRows.length === 0}
-              icon={Zap}
-              label="Grab selected pending FuN releases"
-              onClick={() => onGrab?.(selectedRows.map((row) => row.original.arrId))}
-              tone="warning"
-            >
+            <IconButton icon={Zap} label="Grab selected pending FuN releases" onClick={() => onGrab?.(selectedRows.map((row) => row.original.arrId))} tone="warning">
               Grab selected
             </IconButton>
           </>
@@ -212,7 +204,7 @@ export function SonarrSeriesView({
         columnFilters={tableState.state.columnFilters}
         columns={columns}
         data={resolvedRows}
-        description="Series-level coverage with selected-only search/grab controls, pending FuN* candidates, and FuN* share filters."
+        description="Series-level coverage with pending FuN* candidates and selected-only search/grab controls."
         enableColumnVisibility
         filters={filterControls}
         globalFilter={tableState.state.globalFilter}
@@ -228,11 +220,11 @@ export function SonarrSeriesView({
         title="Sonarr Series"
       />
       {detailsRow ? (
-        <section className="rounded-lg border border-white/10 bg-ink-900/80 p-4 shadow-surface">
+        <section className="animate-fade-up rounded-xl bg-ink-925 p-4 shadow-card">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
-              <h2 className="text-base font-semibold text-white">{detailsRow.title}</h2>
-              <p className="mt-1 text-sm text-ink-400">
+              <h2 className="text-[15px] font-semibold text-white">{detailsRow.title}</h2>
+              <p className="mt-1 text-[13px] text-ink-500">
                 {detailsRow.files} files across {detailsRow.episodes} episodes, {detailsRow.nonFunFiles} non-FuN files, last analyzed {detailsRow.lastAnalyzed}.
               </p>
             </div>
@@ -251,16 +243,48 @@ export function SonarrSeriesView({
   );
 }
 
+export function AnalysisSection({
+  analyzing,
+  onAnalyze,
+  statusMessage,
+  title,
+}: {
+  analyzing: boolean;
+  onAnalyze: () => void;
+  statusMessage: string;
+  title: string;
+}) {
+  return (
+    <section className="flex flex-col gap-3 rounded-xl bg-ink-925 p-4 shadow-card sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-signal-cyan/[0.10] text-signal-cyan">
+          <Radar aria-hidden="true" className="h-[18px] w-[18px]" />
+        </span>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h2 className="text-[15px] font-semibold text-white">{title}</h2>
+            <StatusPill tone={analyzing ? "running" : "idle"}>{analyzing ? "running" : "idle"}</StatusPill>
+          </div>
+          <p className="mt-0.5 truncate text-[13px] text-ink-500">{statusMessage}</p>
+        </div>
+      </div>
+      <IconButton disabled={analyzing} icon={Radar} label={`Analyze all ${title}`} onClick={onAnalyze} tone="primary">
+        {analyzing ? "Analyzing..." : "Analyze all"}
+      </IconButton>
+    </section>
+  );
+}
+
 function formatSelectedSummary(selectedRows: Array<Row<SonarrSeriesRow>>): string {
   const pending = selectedRows.reduce((total, row) => total + row.original.pendingFunCandidates, 0);
-  return `${selectedRows.length} selected - ${pending} pending FuN* files`;
+  return `${selectedRows.length} selected · ${pending} pending FuN* files`;
 }
 
 function Detail({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-white/10 bg-ink-950/60 px-3 py-2">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-400">{label}</div>
-      <div className="mt-1 font-mono text-sm text-ink-200">{value}</div>
+    <div className="rounded-lg border border-white/[0.07] bg-ink-950/50 px-3 py-2.5">
+      <div className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-ink-500">{label}</div>
+      <div className="mt-1 font-mono text-[13px] text-ink-200">{value}</div>
     </div>
   );
 }
@@ -290,12 +314,13 @@ function SonarrFilters({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <QuickFilterButton active={activeFunShare === "lt1"} label="Hide 100% FuN*" onClick={() => toggleFilter("funShare", "lt1")} />
-      <QuickFilterButton active={activeFunShare === "lt70"} label="FuN* <70%" onClick={() => toggleFilter("funShare", "lt70")} />
-      <QuickFilterButton active={activePending === "positive"} label="Pending FuN*" onClick={() => toggleFilter("pendingFunCandidates", "positive")} />
-      <QuickFilterButton active={activeStatus === "searchable"} label="Searchable" onClick={() => toggleFilter("status", "searchable")} />
-      <QuickFilterButton active={activeMonitored === true} label="Monitored" onClick={() => toggleFilter("monitored", true)} />
+    <div className="flex flex-wrap items-center gap-1.5">
+      <FilterChip active={activeFunShare === "lt1"} label="Hide 100% FuN*" onClick={() => toggleFilter("funShare", "lt1")} />
+      <FilterChip active={activeFunShare === "lt70"} label="FuN* <70%" onClick={() => toggleFilter("funShare", "lt70")} />
+      <FilterChip active={activePending === "positive"} label="Pending FuN*" onClick={() => toggleFilter("pendingFunCandidates", "positive")} />
+      <FilterChip active={activeStatus === "searchable"} label="Searchable" onClick={() => toggleFilter("status", "searchable")} />
+      <FilterChip active={activeMonitored === true} label="Monitored" onClick={() => toggleFilter("monitored", true)} />
+      <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-white/[0.08]" />
       <FilterSelect
         label="FuN state"
         onChange={(value) => {
@@ -337,23 +362,17 @@ function SonarrFilters({
   );
 }
 
-function QuickFilterButton({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
+export function FilterChip({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
   return (
     <button
       aria-pressed={active}
-      className={`h-10 rounded-md border px-3 text-sm font-medium outline-none shadow-surface transition-[background-color,border-color,color,box-shadow] duration-150 ease-out focus:border-signal-cyan focus:ring-2 focus:ring-signal-cyan/30 ${
+      className={clsx(
+        "inline-flex h-8 items-center rounded-full border px-3 text-[12px] font-medium outline-none",
+        "transition-[background-color,border-color,color] duration-150 ease-out active:scale-[0.97] focus-visible:ring-2 focus-visible:ring-signal-cyan/40",
         active
-          ? "border-signal-cyan/40 bg-signal-cyan/10 text-signal-cyan"
-          : "border-white/10 bg-ink-950 text-ink-200 hover:bg-white/[0.06] hover:text-white"
-      }`}
+          ? "border-signal-cyan/40 bg-signal-cyan/[0.12] text-signal-cyan"
+          : "border-white/[0.09] bg-white/[0.02] text-ink-400 hover:bg-white/[0.06] hover:text-ink-200",
+      )}
       onClick={onClick}
       type="button"
     >
@@ -362,7 +381,7 @@ function QuickFilterButton({
   );
 }
 
-function FilterSelect({
+export function FilterSelect({
   label,
   onChange,
   options,
@@ -375,7 +394,7 @@ function FilterSelect({
     <label className="block">
       <span className="sr-only">{label}</span>
       <select
-        className="h-10 rounded-md border border-white/10 bg-ink-950 px-3 text-sm text-ink-200 outline-none shadow-surface transition-[background-color,border-color,box-shadow] duration-150 ease-out focus:border-signal-cyan focus:ring-2 focus:ring-signal-cyan/30"
+        className="h-8 rounded-md border border-white/[0.09] bg-white/[0.02] px-2.5 text-[12px] font-medium text-ink-300 outline-none transition-[background-color,border-color] duration-150 ease-out hover:bg-white/[0.06] focus:border-signal-cyan/60 focus:ring-2 focus:ring-signal-cyan/25"
         onChange={(event) => onChange(event.target.value)}
       >
         {options.map(([value, text]) => (
@@ -388,20 +407,64 @@ function FilterSelect({
   );
 }
 
-function BooleanCell({ value }: { value: boolean }) {
+export function TitleCell({ maxWidth = 220, value }: { maxWidth?: number; value: string }) {
+  return (
+    <span className="block truncate font-semibold text-white" style={{ maxWidth }} title={value}>
+      {value}
+    </span>
+  );
+}
+
+export function DateCell({ value }: { value: string }) {
+  return <span className="font-mono text-[12.5px] text-ink-400">{value}</span>;
+}
+
+export function BooleanCell({ value }: { value: boolean }) {
   return <StatusPill tone={value ? "success" : "muted"}>{value ? "yes" : "no"}</StatusPill>;
 }
 
-function NumberCell({ tone = "default", value }: { tone?: "default" | "good" | "warning" | "danger"; value: number | string }) {
+export function NumberCell({ muted = false, tone = "default", value }: { muted?: boolean; tone?: "default" | "good" | "warning" | "danger"; value: number | string }) {
   const toneClass =
     tone === "good"
       ? "text-signal-green"
       : tone === "warning"
         ? "text-signal-amber"
         : tone === "danger"
-          ? "text-red-400"
-          : "text-ink-200";
-  return <span className={`font-mono text-sm tabular-nums ${toneClass}`}>{value}</span>;
+          ? "text-signal-red"
+          : muted
+            ? "text-ink-400"
+            : "text-ink-200";
+  return <span className={clsx("font-mono text-[13px] tabular-nums", toneClass)}>{value}</span>;
+}
+
+export function ShareCell({ value }: { value: number }) {
+  const pct = Math.round(value * 100);
+  const tone = value < 0.7 ? "danger" : value < 1 ? "warning" : "good";
+  const bar = tone === "good" ? "bg-signal-green" : tone === "warning" ? "bg-signal-amber" : "bg-signal-red";
+  const text = tone === "good" ? "text-signal-green" : tone === "warning" ? "text-signal-amber" : "text-signal-red";
+  return (
+    <span className="inline-flex items-center justify-end gap-2">
+      <span className="h-1.5 w-12 overflow-hidden rounded-full bg-white/[0.07]">
+        <span className={clsx("block h-full rounded-full", bar)} style={{ width: `${Math.max(2, pct)}%` }} />
+      </span>
+      <span className={clsx("w-9 text-right font-mono text-[13px] font-medium tabular-nums", text)}>{pct}%</span>
+    </span>
+  );
+}
+
+export function CountChip({ tone, value }: { tone: "warning" | "info"; value: number }) {
+  if (!value || value <= 0) {
+    return <span className="font-mono text-[13px] tabular-nums text-ink-600">0</span>;
+  }
+  const cls =
+    tone === "warning"
+      ? "border-signal-amber/25 bg-signal-amber/[0.10] text-signal-amber"
+      : "border-signal-cyan/25 bg-signal-cyan/[0.10] text-signal-cyan";
+  return (
+    <span className={clsx("inline-flex h-[22px] min-w-[1.9rem] items-center justify-center rounded-md border px-1.5 font-mono text-[12px] font-semibold tabular-nums", cls)}>
+      {value}
+    </span>
+  );
 }
 
 function booleanFilter(row: { getValue: (id: string) => unknown }, columnId: string, value: unknown) {

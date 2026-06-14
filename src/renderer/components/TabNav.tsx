@@ -28,7 +28,7 @@ export interface TabNavProps {
 
 export function TabNav({ activeTab, onTabChange, tabs = APP_TABS }: TabNavProps) {
   return (
-    <nav aria-label="Primary" className="flex gap-1 overflow-x-auto px-3 pb-3">
+    <nav aria-label="Primary" className="flex min-w-0 items-center gap-0.5 overflow-x-auto">
       {tabs.map((tab) => {
         const Icon = tab.icon;
         const isActive = tab.id === activeTab;
@@ -37,19 +37,27 @@ export function TabNav({ activeTab, onTabChange, tabs = APP_TABS }: TabNavProps)
           <button
             aria-current={isActive ? "page" : undefined}
             className={clsx(
-              "inline-flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm font-semibold outline-none",
-              "transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.96]",
-              "focus-visible:border-signal-cyan focus-visible:ring-2 focus-visible:ring-signal-cyan/30",
-              isActive
-                ? "bg-signal-cyan/[0.12] text-white shadow-[0_0_0_1px_rgba(94,200,216,0.30),inset_0_-2px_0_rgba(94,200,216,0.72)]"
-                : "text-ink-400 hover:bg-white/[0.05] hover:text-ink-200 hover:shadow-[0_0_0_1px_rgba(255,255,255,0.08)]",
+              "group relative inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium outline-none",
+              "transition-[background-color,color] duration-150 ease-out active:scale-[0.97]",
+              "focus-visible:ring-2 focus-visible:ring-signal-cyan/40",
+              isActive ? "text-white" : "text-ink-400 hover:bg-white/[0.04] hover:text-ink-200",
             )}
             key={tab.id}
             onClick={() => onTabChange(tab.id)}
             type="button"
           >
-            <Icon aria-hidden="true" className="h-4 w-4" />
+            <Icon
+              aria-hidden="true"
+              className={clsx("h-4 w-4 shrink-0 transition-colors duration-150", isActive ? "text-signal-cyan" : "text-ink-500 group-hover:text-ink-300")}
+            />
             {tab.label}
+            <span
+              aria-hidden="true"
+              className={clsx(
+                "pointer-events-none absolute inset-x-2.5 -bottom-[7px] h-0.5 rounded-full bg-signal-cyan transition-opacity duration-150",
+                isActive ? "opacity-100" : "opacity-0",
+              )}
+            />
           </button>
         );
       })}
