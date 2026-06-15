@@ -8,6 +8,7 @@ import {
   analyzeRadarr,
   analyzeRadarrSample,
   completeOnboarding,
+  getItemDetails,
   getSettings,
   getLibrarySummary,
   getQuotaSummary,
@@ -18,6 +19,7 @@ import {
   listJobs,
   openRadarrMovie,
   openSonarrSeries,
+  runCombined,
   saveInstance,
   searchRadarrMovies,
   searchSonarrSeries,
@@ -33,7 +35,7 @@ import { SettingsView } from "./views/SettingsView";
 import { SonarrSeriesView } from "./views/SonarrSeriesView";
 import { StatsView } from "./views/StatsView";
 import { OnboardingView } from "./views/OnboardingView";
-import type { RadarrMovieTableRow, SonarrSeriesTableRow } from "../shared/ipc-contracts";
+import type { QuotaSummary, RadarrMovieTableRow, SonarrSeriesTableRow } from "../shared/ipc-contracts";
 
 export function App() {
   const [activeTab, setActiveTab] = useState<AppTabId>("dashboard");
@@ -46,6 +48,7 @@ export function App() {
   const [radarrAnalyzing, setRadarrAnalyzing] = useState(false);
   const [kpis, setKpis] = useState<KpiItem[]>([]);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [quota, setQuota] = useState<QuotaSummary | undefined>(undefined);
 
   useEffect(() => {
     void getSettings().then((settings) => setOnboardingOpen(!settings.onboardingCompleted));
@@ -124,6 +127,7 @@ export function App() {
       { label: "Grab Budget", value: `${quota.grab.remaining} / ${quota.grab.limit}`, detail: `${quota.grab.used} used`, tone: quota.grab.remaining < 50 ? "warning" : "default" },
       { label: "Jobs", value: `${activeJobs} / ${queuedJobs}`, detail: "running / queued", tone: activeJobs > 0 ? "active" : "default" },
     ]);
+    setQuota(quota);
   }
 
   async function runSonarrAnalyze(seriesIds?: number[]) {
@@ -204,6 +208,38 @@ export function App() {
     }
   }
 
+  async function runSonarrPipeline(seriesIds?: number[]) {
+    setSonarrStatus(
+      seriesIds && seriesIds.length > 0
+        ? `Queueing pipeline for ${seriesIds.length} selected Sonarr series…`
+        : "Queueing full Sonarr pipeline…",
+    );
+    try {
+      const result = await runCombined({ target: seriesIds && seriesIds.length > 0 ? "selected" : "sonarr", seriesIds });
+      setSonarrStatus(result.message);
+      setActiveTab("jobs");
+      void refreshKpis();
+    } catch (error) {
+      setSonarrStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function runRadarrPipeline(movieIds?: number[]) {
+    setRadarrStatus(
+      movieIds && movieIds.length > 0
+        ? `Queueing pipeline for ${movieIds.length} selected Radarr movies…`
+        : "Queueing full Radarr pipeline…",
+    );
+    try {
+      const result = await runCombined({ target: movieIds && movieIds.length > 0 ? "selected" : "radarr", movieIds });
+      setRadarrStatus(result.message);
+      setActiveTab("jobs");
+      void refreshKpis();
+    } catch (error) {
+      setRadarrStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function runOpenSonarrSeries(seriesId: number, titleSlug?: string) {
     try {
       await openSonarrSeries(seriesId, titleSlug);
@@ -255,8 +291,11 @@ export function App() {
           analyzing={sonarrAnalyzing}
           onAnalyze={(seriesIds) => void runSonarrAnalyze(seriesIds)}
           onGrab={(seriesIds) => void runSonarrGrab(seriesIds)}
+          onLoadDetails={getItemDetails}
           onOpenInSonarr={(seriesId, titleSlug) => void runOpenSonarrSeries(seriesId, titleSlug)}
+          onRunPipeline={(seriesIds) => void runSonarrPipeline(seriesIds)}
           onSearch={(seriesIds) => void runSonarrSearch(seriesIds)}
+          quota={quota}
           rows={sonarrRows}
           statusMessage={sonarrStatus}
         />
@@ -266,8 +305,11 @@ export function App() {
           analyzing={radarrAnalyzing}
           onAnalyze={(movieIds) => void runRadarrAnalyze(movieIds)}
           onGrab={(movieIds) => void runRadarrGrab(movieIds)}
+          onLoadDetails={getItemDetails}
           onOpenInRadarr={(movieId) => void runOpenRadarrMovie(movieId)}
+          onRunPipeline={(movieIds) => void runRadarrPipeline(movieIds)}
           onSearch={(movieIds) => void runRadarrSearch(movieIds)}
+          quota={quota}
           rows={radarrRows}
           statusMessage={radarrStatus}
         />
