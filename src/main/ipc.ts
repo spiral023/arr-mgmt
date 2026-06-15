@@ -19,6 +19,7 @@ import { calculateNextRunAt } from "../shared/schedule";
 import type {
   ActivityRowView,
   AppSettingsInput,
+  ArrActionResult,
   InstanceConfigInput,
   InstanceKind,
   InstanceTestResult,
@@ -30,6 +31,7 @@ import type {
   QuotaSummary,
   RadarrActionResult,
   RadarrMovieActionInput,
+  RunCombinedInput,
   ScheduleDeleteInput,
   ScheduleInput,
   ScheduleView,
@@ -93,6 +95,26 @@ export function registerIpcHandlers(state: IpcState): void {
       throw new Error("jobId is required");
     }
     return { ok: state.jobRunner.cancel(jobId) };
+  });
+  ipcMain.handle("jobs:runCombined", (_event, payload: unknown): ArrActionResult => {
+    const input = assertRunCombinedInput(payload);
+    const job = enqueueCombinedJob(state, input.target, { seriesIds: input.seriesIds, movieIds: input.movieIds });
+    return { ok: true, jobId: job.id, message: `Pipeline queued for ${input.target}` };
+  });
+  ipcMain.handle("jobs:resume", (_event, payload: unknown): ArrActionResult => {
+    const jobId =
+      typeof payload === "object" && payload !== null && "jobId" in payload && typeof payload.jobId === "string"
+        ? payload.jobId
+        : undefined;
+    if (!jobId) throw new Error("jobId is required");
+    const job = state.jobRunner.listJobs().find((j) => j.id === jobId);
+    if (!job) return { ok: false, message: "Job not found" };
+    if (job.kind !== "combined") return { ok: false, message: "Only combined jobs can be resumed" };
+    if (job.status !== "blocked_by_budget") return { ok: false, message: "Job is not blocked by budget" };
+    if (job.target === "selected") return { ok: false, message: "Re-select items and start pipeline again" };
+    const resumeTarget = job.target as "sonarr" | "radarr" | "all";
+    const newJob = enqueueCombinedJob(state, resumeTarget);
+    return { ok: true, jobId: newJob.id, message: `Pipeline resumed for ${resumeTarget}` };
   });
   ipcMain.handle("jobs:enqueue", async (_event, payload: unknown) => {
     const name =
@@ -332,6 +354,100 @@ function enqueueRadarrGrab(state: IpcState, input: RadarrMovieActionInput) {
     target: "selected",
     progressTotal: input.movieIds.length,
     run: async (context) => grabRadarrCandidates(state, input, context),
+  });
+}
+
+async function runCombinedWorkflow(
+  state: IpcState,
+  context: JobContext,
+  targets: ReadonlyArray<"sonarr" | "radarr">,
+  ids?: { seriesIds?: number[]; movieIds?: number[] },
+): Promise<void> {
+  const isSelected = Boolean(ids);
+
+  // Phase 1: Analysis
+  for (const t of targets) {
+    context.addEvent("info", `Phase 1/3 — Analyse (${t})`);
+    if (t === "sonarr") {
+      await analyzeSonarrLibrary(state, context, ids?.seriesIds);
+    } else {
+      await analyzeRadarrLibrary(state, context, ids?.movieIds);
+    }
+    context.throwIfCancelled();
+  }
+
+  // Phase 2: Search
+  for (const t of targets) {
+    if (t === "sonarr") {
+      const seriesIds = isSelected
+        ? (ids?.seriesIds ?? [])
+        : state.repositories.mediaItems.listSonarrRows().filter((r) => r.nonFunFiles > 0).map((r) => r.arrId);
+      if (seriesIds.length > 0) {
+        context.addEvent("info", `Phase 2/3 — Search (sonarr, ${seriesIds.length} series)`);
+        await searchSonarrCandidates(state, { seriesIds }, context);
+      } else {
+        context.addEvent("info", "Phase 2/3 — Search (sonarr): no series with non-FuN files, skipping");
+      }
+    } else {
+      const movieIds = isSelected
+        ? (ids?.movieIds ?? [])
+        : state.repositories.mediaItems.listRadarrRows().filter((r) => r.nonFunFiles > 0).map((r) => r.arrId);
+      if (movieIds.length > 0) {
+        context.addEvent("info", `Phase 2/3 — Search (radarr, ${movieIds.length} movies)`);
+        await searchRadarrCandidates(state, { movieIds }, context);
+      } else {
+        context.addEvent("info", "Phase 2/3 — Search (radarr): no movies with non-FuN files, skipping");
+      }
+    }
+    context.throwIfCancelled();
+  }
+
+  // Phase 3: Grab
+  for (const t of targets) {
+    if (t === "sonarr") {
+      const seriesIds = isSelected
+        ? (ids?.seriesIds ?? [])
+        : state.repositories.mediaItems.listSonarrRows().filter((r) => r.pendingFunCandidates > 0).map((r) => r.arrId);
+      if (seriesIds.length > 0) {
+        context.addEvent("info", `Phase 3/3 — Grab (sonarr, ${seriesIds.length} series)`);
+        await grabSonarrCandidates(state, { seriesIds }, context);
+      } else {
+        context.addEvent("info", "Phase 3/3 — Grab (sonarr): no series with pending candidates, skipping");
+      }
+    } else {
+      const movieIds = isSelected
+        ? (ids?.movieIds ?? [])
+        : state.repositories.mediaItems.listRadarrRows().filter((r) => r.pendingFunCandidates > 0).map((r) => r.arrId);
+      if (movieIds.length > 0) {
+        context.addEvent("info", `Phase 3/3 — Grab (radarr, ${movieIds.length} movies)`);
+        await grabRadarrCandidates(state, { movieIds }, context);
+      } else {
+        context.addEvent("info", "Phase 3/3 — Grab (radarr): no movies with pending candidates, skipping");
+      }
+    }
+  }
+}
+
+function enqueueCombinedJob(
+  state: IpcState,
+  jobTarget: "sonarr" | "radarr" | "all" | "selected",
+  ids?: { seriesIds?: number[]; movieIds?: number[] },
+) {
+  const targets: ReadonlyArray<"sonarr" | "radarr"> =
+    jobTarget === "all"
+      ? ["sonarr", "radarr"]
+      : jobTarget === "selected"
+      ? [
+          ...(ids?.seriesIds && ids.seriesIds.length > 0 ? (["sonarr"] as const) : []),
+          ...(ids?.movieIds && ids.movieIds.length > 0 ? (["radarr"] as const) : []),
+        ]
+      : [jobTarget];
+
+  return state.jobRunner.enqueue({
+    name: jobTarget === "selected" ? "Run pipeline (selected)" : `Run pipeline (${jobTarget})`,
+    kind: "combined",
+    target: jobTarget,
+    run: (context) => runCombinedWorkflow(state, context, targets, ids),
   });
 }
 
@@ -1289,6 +1405,25 @@ function assertScheduleDeleteInput(payload: unknown): ScheduleDeleteInput {
     throw new Error("Schedule id is required");
   }
   return { id: Number(value.id) };
+}
+
+function assertRunCombinedInput(payload: unknown): RunCombinedInput {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Invalid runCombined payload");
+  }
+  const value = payload as Partial<RunCombinedInput>;
+  if (value.target !== "sonarr" && value.target !== "radarr" && value.target !== "all" && value.target !== "selected") {
+    throw new Error("Invalid target for runCombined — must be sonarr, radarr, all, or selected");
+  }
+  return {
+    target: value.target,
+    seriesIds: Array.isArray(value.seriesIds)
+      ? value.seriesIds.filter((id): id is number => Number.isInteger(id) && id > 0)
+      : undefined,
+    movieIds: Array.isArray(value.movieIds)
+      ? value.movieIds.filter((id): id is number => Number.isInteger(id) && id > 0)
+      : undefined,
+  };
 }
 
 function formatDateTime(value: string | undefined): string {
