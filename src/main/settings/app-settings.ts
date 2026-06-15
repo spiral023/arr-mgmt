@@ -13,7 +13,7 @@ export const defaultAppSettings: AppSettings = {
     quotaExhausted: true,
     candidatesFound: true,
   },
-  quota: { searchLimit: 2000, grabLimit: 400, windowHours: 24 },
+  quota: { searchLimit: 10000, grabLimit: 400, windowHours: 24 },
   tray: { keepRunningOnClose: true, showControls: true },
 };
 

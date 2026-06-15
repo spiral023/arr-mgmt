@@ -1,5 +1,11 @@
 export type ArrKind = "sonarr" | "radarr";
 
+export type ArrQualityProfile = {
+  id: number;
+  name: string;
+  [key: string]: unknown;
+};
+
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export type ArrClientConfig = {
@@ -56,6 +62,7 @@ export type SonarrSeries = {
   sortTitle?: string;
   monitored?: boolean;
   year?: number;
+  qualityProfileId?: number;
   [key: string]: unknown;
 };
 
@@ -99,6 +106,7 @@ export type RadarrMovie = {
   year?: number;
   monitored?: boolean;
   movieFile?: RadarrMovieFile | null;
+  qualityProfileId?: number;
   [key: string]: unknown;
 };
 
@@ -132,6 +140,7 @@ export type MediaItemAnalysis = {
   funSizeBytes: number;
   funShare: number;
   lastAnalyzedAt: string;
+  qualityProfileName?: string;
   files: AnalysisFile[];
 };
 

@@ -16,7 +16,8 @@ export type RadarrAnalysisResult = {
 export function analyzeSonarrSeries(
   series: SonarrSeries,
   episodes: SonarrEpisode[],
-  analyzedAt = new Date()
+  analyzedAt = new Date(),
+  qualityProfileName?: string
 ): MediaItemAnalysis {
   const files: AnalysisFile[] = episodes.flatMap((episode) => {
     if (!episode.episodeFile) {
@@ -51,13 +52,14 @@ export function analyzeSonarrSeries(
     year: series.year,
     monitored: series.monitored ?? false,
     totalChildren: episodes.length,
+    qualityProfileName,
     files,
     analyzedAt
   });
 }
 
-export function analyzeRadarrMovies(movies: RadarrMovie[], analyzedAt = new Date()): RadarrAnalysisResult {
-  const items = movies.map((movie) => analyzeRadarrMovie(movie, analyzedAt));
+export function analyzeRadarrMovies(movies: RadarrMovie[], analyzedAt = new Date(), qualityProfileName?: string): RadarrAnalysisResult {
+  const items = movies.map((movie) => analyzeRadarrMovie(movie, analyzedAt, qualityProfileName));
   const itemsWithFile = items.filter((item) => item.hasFile).length;
   const funItems = items.filter((item) => item.funChildren > 0).length;
   const totalSizeBytes = sum(items.map((item) => item.totalSizeBytes));
@@ -77,7 +79,7 @@ export function analyzeRadarrMovies(movies: RadarrMovie[], analyzedAt = new Date
   };
 }
 
-function analyzeRadarrMovie(movie: RadarrMovie, analyzedAt: Date): MediaItemAnalysis {
+function analyzeRadarrMovie(movie: RadarrMovie, analyzedAt: Date, qualityProfileName?: string): MediaItemAnalysis {
   const files: AnalysisFile[] = movie.movieFile
     ? [
         {
@@ -101,6 +103,7 @@ function analyzeRadarrMovie(movie: RadarrMovie, analyzedAt: Date): MediaItemAnal
     year: movie.year,
     monitored: movie.monitored ?? false,
     totalChildren: 1,
+    qualityProfileName,
     files,
     analyzedAt
   });
@@ -115,6 +118,7 @@ function buildMediaItemAnalysis(input: {
   year?: number;
   monitored: boolean;
   totalChildren: number;
+  qualityProfileName?: string;
   files: AnalysisFile[];
   analyzedAt: Date;
 }): MediaItemAnalysis {
@@ -140,6 +144,7 @@ function buildMediaItemAnalysis(input: {
     funSizeBytes,
     funShare: childrenWithFile === 0 ? 0 : funChildren / childrenWithFile,
     lastAnalyzedAt: input.analyzedAt.toISOString(),
+    qualityProfileName: input.qualityProfileName,
     files: input.files
   };
 }

@@ -47,9 +47,19 @@ export function SonarrSeriesView({
     sorting: [{ id: "nonFunFiles", desc: true }],
   });
   const resolvedRows = liveRows ?? [];
+  const qualityProfileNames = useMemo(
+    () => [...new Set(resolvedRows.map((r) => r.qualityProfileName).filter((n): n is string => Boolean(n)))].sort(),
+    [resolvedRows],
+  );
   const filterControls = useMemo(
-    () => <SonarrFilters columnFilters={tableState.state.columnFilters} onColumnFiltersChange={tableState.setColumnFilters} />,
-    [tableState],
+    () => (
+      <SonarrFilters
+        columnFilters={tableState.state.columnFilters}
+        onColumnFiltersChange={tableState.setColumnFilters}
+        qualityProfileNames={qualityProfileNames}
+      />
+    ),
+    [tableState, qualityProfileNames],
   );
 
   const columns = useMemo<Array<ColumnDef<SonarrSeriesRow, unknown>>>(
@@ -147,6 +157,13 @@ export function SonarrSeriesView({
         header: "Pending FuN*",
         meta: { align: "right" },
         size: 124,
+      },
+      {
+        accessorKey: "qualityProfileName",
+        cell: ({ getValue }) => <NumberCell muted value={getValue<string | undefined>() ?? "-"} />,
+        filterFn: stringEqualityFilter,
+        header: "Quality profile",
+        size: 152,
       },
       { accessorKey: "lastAnalyzed", cell: ({ getValue }) => <DateCell value={getValue<string>()} />, header: "Last analyzed", size: 144 },
       { accessorKey: "lastSearched", cell: ({ getValue }) => <DateCell value={getValue<string>()} />, header: "Last searched", size: 144 },
@@ -298,9 +315,11 @@ function Detail({ label, value }: { label: string; value: string }) {
 function SonarrFilters({
   columnFilters,
   onColumnFiltersChange,
+  qualityProfileNames,
 }: {
   columnFilters: ColumnFiltersState;
   onColumnFiltersChange: (filters: ColumnFiltersState) => void;
+  qualityProfileNames: string[];
 }) {
   const activeFunShare = columnFilters.find((filter) => filter.id === "funShare")?.value;
   const activePending = columnFilters.find((filter) => filter.id === "pendingFunCandidates")?.value;
@@ -364,6 +383,13 @@ function SonarrFilters({
           ["failedLastSearch", "Failed last search"],
         ]}
       />
+      {qualityProfileNames.length > 0 && (
+        <FilterSelect
+          label="Quality profile"
+          onChange={(value) => onColumnFiltersChange(updateColumnFilter(columnFilters, "qualityProfileName", value))}
+          options={[["", "All profiles"], ...qualityProfileNames.map((n): [string, string] => [n, n])]}
+        />
+      )}
     </div>
   );
 }
@@ -486,6 +512,10 @@ function funShareFilter(row: { getValue: (id: string) => unknown }, columnId: st
   if (value === "lt1") return share < 1;
   if (value === "lt70") return share < 0.7;
   return true;
+}
+
+function stringEqualityFilter(row: { getValue: (id: string) => unknown }, columnId: string, value: unknown) {
+  return value === "" || row.getValue(columnId) === value;
 }
 
 function formatPercent(value: number) {

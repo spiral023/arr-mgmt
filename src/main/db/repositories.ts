@@ -69,8 +69,9 @@ export function createRepositories(db: AppDatabase) {
              fun_children,
              total_size_bytes,
              fun_share,
-             last_analyzed_at
-           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             last_analyzed_at,
+             quality_profile_name
+           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            on conflict(instance_id, kind, arr_id) do update set
              title = excluded.title,
              title_slug = excluded.title_slug,
@@ -83,7 +84,8 @@ export function createRepositories(db: AppDatabase) {
              fun_children = excluded.fun_children,
              total_size_bytes = excluded.total_size_bytes,
              fun_share = excluded.fun_share,
-             last_analyzed_at = excluded.last_analyzed_at`,
+             last_analyzed_at = excluded.last_analyzed_at,
+             quality_profile_name = excluded.quality_profile_name`,
         ).run(
           instanceId,
           item.kind,
@@ -100,6 +102,7 @@ export function createRepositories(db: AppDatabase) {
           item.totalSizeBytes,
           item.funShare,
           item.lastAnalyzedAt,
+          item.qualityProfileName ?? null,
         );
 
         const mediaItem = db
@@ -215,7 +218,7 @@ export function createRepositories(db: AppDatabase) {
           .prepare(
             `select arr_id as arrId
              from media_items
-             where instance_id = ? and kind = ? and last_analyzed_at is not null
+             where instance_id = ? and kind = ? and last_analyzed_at is not null and quality_profile_name is not null
              order by arr_id asc`,
           )
           .all(instanceId, kind) as Array<{ arrId: number }>;
@@ -257,7 +260,8 @@ export function createRepositories(db: AppDatabase) {
                mi.last_analyzed_at as lastAnalyzed,
                la.lastSearched,
                la.lastGrabbed,
-               coalesce(pc.pendingFunCandidates, 0) as pendingFunCandidates
+               coalesce(pc.pendingFunCandidates, 0) as pendingFunCandidates,
+               mi.quality_profile_name as qualityProfileName
              from media_items mi
              join instances i on i.id = mi.instance_id
              left join last_activity la on la.media_item_id = mi.id
@@ -281,6 +285,7 @@ export function createRepositories(db: AppDatabase) {
           lastSearched: string | null;
           lastGrabbed: string | null;
           pendingFunCandidates: number;
+          qualityProfileName: string | null;
         }>;
 
         return rows.map((row) => {
@@ -303,6 +308,7 @@ export function createRepositories(db: AppDatabase) {
             lastSearched: row.lastSearched ?? "-",
             lastGrabbed: row.lastGrabbed ?? "-",
             status: nonFunFiles > 0 && row.funFiles > 0 ? "searchable" : "ready",
+            qualityProfileName: row.qualityProfileName ?? undefined,
           };
         });
       },
@@ -353,7 +359,8 @@ export function createRepositories(db: AppDatabase) {
                coalesce(pc.pendingFunCandidates, 0) as pendingFunCandidates,
                ff.releaseGroup,
                coalesce(ff.isFun, 0) as isFun,
-               coalesce(ff.sizeBytes, mi.total_size_bytes, 0) as sizeBytes
+               coalesce(ff.sizeBytes, mi.total_size_bytes, 0) as sizeBytes,
+               mi.quality_profile_name as qualityProfileName
              from media_items mi
              join instances i on i.id = mi.instance_id
              left join last_activity la on la.media_item_id = mi.id
@@ -380,6 +387,7 @@ export function createRepositories(db: AppDatabase) {
           releaseGroup: string | null;
           isFun: 0 | 1;
           sizeBytes: number;
+          qualityProfileName: string | null;
         }>;
 
         return rows.map((row) => {
@@ -403,6 +411,7 @@ export function createRepositories(db: AppDatabase) {
             lastSearched: row.lastSearched ?? "-",
             lastGrabbed: row.lastGrabbed ?? "-",
             status: nonFunFiles > 0 ? "searchable" : "ready",
+            qualityProfileName: row.qualityProfileName ?? undefined,
           };
         });
       },

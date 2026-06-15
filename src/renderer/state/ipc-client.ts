@@ -188,7 +188,7 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
         cooldownHours: { episodeSearch: 24, movieSearch: 24 },
         fun: { displayName: "FuN*", prefixes: ["fun"] },
         notifications: { candidatesFound: true, jobFinished: true, quotaExhausted: true },
-        quota: { searchLimit: 2000, grabLimit: 400, windowHours: 24 },
+        quota: { searchLimit: 10000, grabLimit: 400, windowHours: 24 },
         tray: { keepRunningOnClose: true, showControls: true },
       },
       instances: [

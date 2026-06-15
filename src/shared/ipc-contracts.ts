@@ -94,6 +94,7 @@ export type SonarrSeriesTableRow = {
   lastSearched: string;
   lastGrabbed: string;
   status: "ready" | "searchable" | "cooldown" | "failed";
+  qualityProfileName?: string;
 };
 
 export type RadarrMovieTableRow = {
@@ -115,6 +116,7 @@ export type RadarrMovieTableRow = {
   lastSearched: string;
   lastGrabbed: string;
   status: "ready" | "searchable" | "cooldown" | "failed";
+  qualityProfileName?: string;
 };
 
 export type MediaItemDetailsInput = {

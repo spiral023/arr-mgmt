@@ -2,6 +2,7 @@ import { ArrApiClient } from "./arr-api-client";
 import type {
   ArrClientConfig,
   ArrCommand,
+  ArrQualityProfile,
   ArrRelease,
   ArrStatus,
   SonarrEpisode,
@@ -19,6 +20,10 @@ export class SonarrClient extends ArrApiClient {
 
   getSeries(): Promise<SonarrSeries[]> {
     return this.get<SonarrSeries[]>("/series");
+  }
+
+  getQualityProfiles(): Promise<ArrQualityProfile[]> {
+    return this.get<ArrQualityProfile[]>("/qualityprofile");
   }
 
   getEpisodes(seriesId: number, includeEpisodeFile: boolean): Promise<SonarrEpisode[]> {

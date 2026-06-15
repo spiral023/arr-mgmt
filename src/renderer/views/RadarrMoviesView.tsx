@@ -7,13 +7,14 @@ import { MediaDetailLists } from "../components/MediaDetailLists";
 import { ReleaseGroupBadge } from "../components/ReleaseGroupBadge";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
 import { useItemDetails } from "../state/use-item-details";
-import { updateColumnFilter } from "../state/table-state";
+import { updateColumnFilter, type TableFilterValue } from "../state/table-state";
 import { usePersistedTableState } from "../state/use-persisted-table-state";
 import {
   AnalysisSection,
   BooleanCell,
   CountChip,
   DateCell,
+  FilterChip,
   FilterSelect,
   NumberCell,
   ShareCell,
@@ -55,9 +56,19 @@ export function RadarrMoviesView({
     sorting: [{ id: "nonFunFiles", desc: true }],
   });
   const rows = liveRows ?? [];
+  const qualityProfileNames = useMemo(
+    () => [...new Set(rows.map((r) => r.qualityProfileName).filter((n): n is string => Boolean(n)))].sort(),
+    [rows],
+  );
   const filterControls = useMemo(
-    () => <RadarrFilters columnFilters={tableState.state.columnFilters} onColumnFiltersChange={tableState.setColumnFilters} />,
-    [tableState],
+    () => (
+      <RadarrFilters
+        columnFilters={tableState.state.columnFilters}
+        onColumnFiltersChange={tableState.setColumnFilters}
+        qualityProfileNames={qualityProfileNames}
+      />
+    ),
+    [tableState, qualityProfileNames],
   );
 
   const columns = useMemo<Array<ColumnDef<RadarrMovieTableRow, unknown>>>(
@@ -152,6 +163,13 @@ export function RadarrMoviesView({
         header: "Pending FuN*",
         meta: { align: "right" },
         size: 124,
+      },
+      {
+        accessorKey: "qualityProfileName",
+        cell: ({ getValue }) => <NumberCell muted value={getValue<string | undefined>() ?? "-"} />,
+        filterFn: stringEqualityFilter,
+        header: "Quality profile",
+        size: 152,
       },
       { accessorKey: "lastAnalyzed", cell: ({ getValue }) => <DateCell value={getValue<string>()} />, header: "Last analyzed", size: 144 },
       { accessorKey: "lastSearched", cell: ({ getValue }) => <DateCell value={getValue<string>()} />, header: "Last searched", size: 144 },
@@ -254,20 +272,41 @@ export function RadarrMoviesView({
 function RadarrFilters({
   columnFilters,
   onColumnFiltersChange,
+  qualityProfileNames,
 }: {
   columnFilters: ColumnFiltersState;
   onColumnFiltersChange: (filters: ColumnFiltersState) => void;
+  qualityProfileNames: string[];
 }) {
+  const activeFunShare = columnFilters.find((f) => f.id === "funShare")?.value;
+  const activePending = columnFilters.find((f) => f.id === "pendingFunCandidates")?.value;
+  const activeStatus = columnFilters.find((f) => f.id === "status")?.value;
+  const activeMonitored = columnFilters.find((f) => f.id === "monitored")?.value;
+
+  function toggleFilter(columnId: string, value: TableFilterValue, exclusiveColumns: string[] = [columnId]) {
+    let next = columnFilters;
+    for (const col of exclusiveColumns) next = updateColumnFilter(next, col, "");
+    const isActive = columnFilters.some((f) => f.id === columnId && f.value === value);
+    if (!isActive) next = updateColumnFilter(next, columnId, value);
+    onColumnFiltersChange(next);
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
+      <FilterChip active={activeFunShare === "lt1"} label="Hide 100% FuN*" onClick={() => toggleFilter("funShare", "lt1")} />
+      <FilterChip active={activeFunShare === "lt70"} label="FuN* <70%" onClick={() => toggleFilter("funShare", "lt70")} />
+      <FilterChip active={activePending === "positive"} label="Pending FuN*" onClick={() => toggleFilter("pendingFunCandidates", "positive")} />
+      <FilterChip active={activeStatus === "searchable"} label="Searchable" onClick={() => toggleFilter("status", "searchable")} />
+      <FilterChip active={activeMonitored === true} label="Monitored" onClick={() => toggleFilter("monitored", true)} />
+      <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-white/[0.08]" />
       <FilterSelect
         label="FuN state"
         onChange={(value) => {
           let next = updateColumnFilter(columnFilters, "funShare", "");
-          let next2 = updateColumnFilter(next, "nonFunFiles", "");
-          if (value === "fun") next2 = updateColumnFilter(next2, "funShare", "eq1");
-          if (value === "notFun") next2 = updateColumnFilter(next2, "nonFunFiles", "positive");
-          onColumnFiltersChange(next2);
+          next = updateColumnFilter(next, "nonFunFiles", "");
+          if (value === "fun") next = updateColumnFilter(next, "funShare", "eq1");
+          if (value === "notFun") next = updateColumnFilter(next, "nonFunFiles", "positive");
+          onColumnFiltersChange(next);
         }}
         options={[
           ["", "All FuN states"],
@@ -296,6 +335,13 @@ function RadarrFilters({
           ["candidateFound", "Candidate found"],
         ]}
       />
+      {qualityProfileNames.length > 0 && (
+        <FilterSelect
+          label="Quality profile"
+          onChange={(value) => onColumnFiltersChange(updateColumnFilter(columnFilters, "qualityProfileName", value))}
+          options={[["", "All profiles"], ...qualityProfileNames.map((n): [string, string] => [n, n])]}
+        />
+      )}
     </div>
   );
 }
@@ -325,7 +371,13 @@ function positiveNumberFilter(row: { getValue: (id: string) => unknown }, column
 function funShareFilter(row: { getValue: (id: string) => unknown }, columnId: string, value: unknown) {
   const share = Number(row.getValue(columnId));
   if (value === "eq1") return share === 1;
+  if (value === "lt1") return share < 1;
+  if (value === "lt70") return share < 0.7;
   return true;
+}
+
+function stringEqualityFilter(row: { getValue: (id: string) => unknown }, columnId: string, value: unknown) {
+  return value === "" || row.getValue(columnId) === value;
 }
 
 function formatPercent(value: number) {

@@ -339,7 +339,8 @@ async function analyzeSonarrLibrary(state: IpcState, context: JobContext, series
   const config = state.instanceStore.getWithApiKey("sonarr");
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
   const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
-  const seriesList = await client.getSeries();
+  const [seriesList, qualityProfiles] = await Promise.all([client.getSeries(), client.getQualityProfiles().catch(() => [])]);
+  const qualityProfileMap = new Map(qualityProfiles.map((p) => [p.id, p.name]));
   const requestedSeriesIds = seriesIds && seriesIds.length > 0 ? new Set(seriesIds) : undefined;
   const matchingSeries = requestedSeriesIds ? seriesList.filter((series) => requestedSeriesIds.has(series.id)) : seriesList;
   const analyzedArrIds = new Set(state.repositories.mediaItems.listAnalyzedArrIds("series", instanceId));
@@ -366,7 +367,7 @@ async function analyzeSonarrLibrary(state: IpcState, context: JobContext, series
       context.throwIfCancelled();
       const episodes = await client.getEpisodes(series.id, true);
       context.throwIfCancelled();
-      const item = analyzeSonarrSeries(series, episodes, analyzedAt);
+      const item = analyzeSonarrSeries(series, episodes, analyzedAt, series.qualityProfileId != null ? qualityProfileMap.get(series.qualityProfileId) : undefined);
       const mediaItemId = state.repositories.mediaItems.upsertAnalysis(instanceId, item);
       state.repositories.activityLog.insert({
         action: "analysis",
@@ -397,7 +398,8 @@ async function analyzeRadarrLibrary(state: IpcState, context: JobContext, movieI
   const config = state.instanceStore.getWithApiKey("radarr");
   const instanceId = upsertRuntimeInstance(state, "radarr", config);
   const client = new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
-  const movies = await client.getMovies();
+  const [movies, radarrQualityProfiles] = await Promise.all([client.getMovies(), client.getQualityProfiles().catch(() => [])]);
+  const radarrQualityProfileMap = new Map(radarrQualityProfiles.map((p) => [p.id, p.name]));
   const requestedMovieIds = movieIds && movieIds.length > 0 ? new Set(movieIds) : undefined;
   const matchingMovies = requestedMovieIds ? movies.filter((movie) => requestedMovieIds.has(movie.id)) : movies;
   const analyzedArrIds = new Set(state.repositories.mediaItems.listAnalyzedArrIds("movie", instanceId));
@@ -413,7 +415,7 @@ async function analyzeRadarrLibrary(state: IpcState, context: JobContext, movieI
   await mapConcurrent(moviesToAnalyze, RADARR_ANALYSIS_CONCURRENCY, async (movie) => {
     try {
       context.throwIfCancelled();
-      const result = analyzeRadarrMovies([movie], analyzedAt);
+      const result = analyzeRadarrMovies([movie], analyzedAt, movie.qualityProfileId != null ? radarrQualityProfileMap.get(movie.qualityProfileId) : undefined);
       const mediaItemId = state.repositories.mediaItems.upsertAnalysis(instanceId, result.items[0]);
       state.repositories.activityLog.insert({
         action: "analysis",

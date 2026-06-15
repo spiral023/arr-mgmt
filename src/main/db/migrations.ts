@@ -158,6 +158,7 @@ export function migrateDatabase(db: AppDatabase): void {
       db.prepare(statement).run();
     }
     ensureColumn(db, "media_items", "title_slug", "text");
+    ensureColumn(db, "media_items", "quality_profile_name", "text");
   });
   migrate();
 }

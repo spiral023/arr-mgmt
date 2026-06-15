@@ -23,7 +23,7 @@ export function SettingsView() {
   const [movieCooldown, setMovieCooldown] = useState(24);
   const [message, setMessage] = useState("Ready");
   const [quotaExhaustedNotifications, setQuotaExhaustedNotifications] = useState(true);
-  const [searchLimit, setSearchLimit] = useState(2000);
+  const [searchLimit, setSearchLimit] = useState(10000);
   const [showTrayControls, setShowTrayControls] = useState(true);
   const [scheduleActions, setScheduleActions] = useState<ScheduleAction[]>(["analysis", "search"]);
   const [scheduleEnabled, setScheduleEnabled] = useState(true);

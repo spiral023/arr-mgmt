@@ -1,5 +1,5 @@
 import { ArrApiClient } from "./arr-api-client";
-import type { ArrClientConfig, ArrCommand, ArrRelease, ArrStatus, RadarrMovie } from "./arr-types";
+import type { ArrClientConfig, ArrCommand, ArrQualityProfile, ArrRelease, ArrStatus, RadarrMovie } from "./arr-types";
 
 export class RadarrClient extends ArrApiClient {
   constructor(config: ArrClientConfig) {
@@ -12,6 +12,10 @@ export class RadarrClient extends ArrApiClient {
 
   getMovies(): Promise<RadarrMovie[]> {
     return this.get<RadarrMovie[]>("/movie");
+  }
+
+  getQualityProfiles(): Promise<ArrQualityProfile[]> {
+    return this.get<ArrQualityProfile[]>("/qualityprofile");
   }
 
   getReleasesForMovie(movieId: number): Promise<ArrRelease[]> {
