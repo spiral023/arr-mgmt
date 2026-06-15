@@ -29,7 +29,9 @@ export type IpcChannel =
   | "radarr:search"
   | "radarr:grab"
   | "radarr:openMovie"
-  | "onboarding:complete";
+  | "onboarding:complete"
+  | "jobs:runCombined"
+  | "jobs:resume";
 
 export type SonarrSeriesActionInput = {
   seriesIds: number[];
@@ -284,6 +286,14 @@ export type ActivityRowView = {
   quota: string;
   status: string;
 };
+
+export type RunCombinedInput = {
+  target: "sonarr" | "radarr" | "all" | "selected";
+  seriesIds?: number[];
+  movieIds?: number[];
+};
+
+export type ResumeJobInput = { jobId: string };
 
 export type RendererApi = {
   invoke: <T = unknown>(channel: IpcChannel, payload?: unknown) => Promise<T>;
