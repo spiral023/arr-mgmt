@@ -1,6 +1,7 @@
 import type {
   ActivityRowView,
   AppSettingsInput,
+  ArrActionResult,
   InstanceConfigInput,
   InstanceConfigView,
   InstanceTestResult,
@@ -15,6 +16,8 @@ import type {
   RadarrActionResult,
   RadarrMovieActionInput,
   RadarrMovieTableRow,
+  ResumeJobInput,
+  RunCombinedInput,
   ScheduleDeleteInput,
   ScheduleInput,
   ScheduleView,
@@ -134,6 +137,14 @@ export function searchRadarrMovies(movieIds: number[]): Promise<RadarrActionResu
 
 export function grabRadarrMovies(movieIds: number[]): Promise<RadarrActionResult> {
   return invokeIpc<RadarrActionResult>("radarr:grab", { movieIds } satisfies RadarrMovieActionInput);
+}
+
+export function runCombined(input: RunCombinedInput): Promise<ArrActionResult> {
+  return invokeIpc<ArrActionResult>("jobs:runCombined", input);
+}
+
+export function resumeJob(jobId: string): Promise<ArrActionResult> {
+  return invokeIpc<ArrActionResult>("jobs:resume", { jobId } satisfies ResumeJobInput);
 }
 
 export function openSonarrSeries(seriesId: number, titleSlug?: string): Promise<{ ok: boolean }> {
@@ -301,6 +312,12 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
       search: { used: 0, remaining: 2000, limit: 2000 },
       grab: { used: 1, remaining: 399, limit: 400 },
     } as T;
+  }
+  if (channel === "jobs:runCombined") {
+    return { ok: true, message: "Pipeline queued (browser preview)" } as T;
+  }
+  if (channel === "jobs:resume") {
+    return { ok: true, message: "Pipeline resumed (browser preview)" } as T;
   }
   return {} as T;
 }
