@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ColumnDef, ColumnFiltersState, Row } from "@tanstack/react-table";
-import { ExternalLink, Eye, Radar, Search, Zap } from "lucide-react";
+import { ExternalLink, Eye, Play, Radar, Search, Zap } from "lucide-react";
 import { clsx } from "clsx";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
@@ -9,7 +9,7 @@ import { StatusPill, type StatusTone } from "../components/StatusPill";
 import { useItemDetails } from "../state/use-item-details";
 import { updateColumnFilter, type TableFilterValue } from "../state/table-state";
 import { usePersistedTableState } from "../state/use-persisted-table-state";
-import type { MediaItemDetails, SonarrSeriesTableRow } from "../../shared/ipc-contracts";
+import type { MediaItemDetails, QuotaSummary, SonarrSeriesTableRow } from "../../shared/ipc-contracts";
 
 type SeriesStatus = "ready" | "searchable" | "cooldown" | "failed";
 
@@ -28,7 +28,9 @@ export function SonarrSeriesView({
   onGrab,
   onLoadDetails,
   onOpenInSonarr,
+  onRunPipeline,
   onSearch,
+  quota,
   rows: liveRows,
   statusMessage = "Ready",
 }: {
@@ -37,7 +39,9 @@ export function SonarrSeriesView({
   onGrab?: (seriesIds: number[]) => void;
   onLoadDetails?: (kind: "series" | "movie", arrId: number) => Promise<MediaItemDetails>;
   onOpenInSonarr?: (seriesId: number, titleSlug?: string) => void;
+  onRunPipeline?: (seriesIds?: number[]) => void;
   onSearch?: (seriesIds: number[]) => void;
+  quota?: QuotaSummary;
   rows?: SonarrSeriesTableRow[];
   statusMessage?: string;
 }) {
@@ -202,7 +206,14 @@ export function SonarrSeriesView({
 
   return (
     <div className="flex flex-col gap-4">
-      <AnalysisSection analyzing={analyzing} onAnalyze={() => onAnalyze?.()} statusMessage={statusMessage} title="Sonarr Analysis" />
+      <PipelineSection
+        analyzing={analyzing}
+        onAnalyze={() => onAnalyze?.()}
+        onRunPipeline={() => onRunPipeline?.()}
+        quota={quota}
+        statusMessage={statusMessage}
+        title="Sonarr Pipeline"
+      />
       <DataTable
         bulkActions={(selectedRows) => (
           <>
@@ -220,6 +231,15 @@ export function SonarrSeriesView({
             </IconButton>
             <IconButton icon={Zap} label="Grab selected pending FuN releases" onClick={() => onGrab?.(selectedRows.map((row) => row.original.arrId))} tone="warning">
               Grab selected
+            </IconButton>
+            <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-white/[0.08]" />
+            <IconButton
+              icon={Play}
+              label="Run full pipeline for selected series"
+              onClick={() => onRunPipeline?.(selectedRows.map((row) => row.original.arrId))}
+              tone="primary"
+            >
+              Run pipeline
             </IconButton>
           </>
         )}
@@ -266,35 +286,86 @@ export function SonarrSeriesView({
   );
 }
 
-export function AnalysisSection({
-  analyzing,
+export function PipelineSection({
+  analyzing = false,
   onAnalyze,
-  statusMessage,
+  onRunPipeline,
+  quota,
+  statusMessage = "Ready",
   title,
 }: {
-  analyzing: boolean;
-  onAnalyze: () => void;
-  statusMessage: string;
+  analyzing?: boolean;
+  onAnalyze?: () => void;
+  onRunPipeline?: () => void;
+  quota?: QuotaSummary;
+  statusMessage?: string;
   title: string;
 }) {
+  const searchLow = quota !== undefined && quota.search.limit > 0 && quota.search.remaining / quota.search.limit <= 0.1;
+  const grabLow = quota !== undefined && quota.grab.limit > 0 && quota.grab.remaining / quota.grab.limit <= 0.1;
+
   return (
-    <section className="flex flex-col gap-3 rounded-xl bg-ink-925 p-4 shadow-card sm:flex-row sm:items-center sm:justify-between">
+    <section className="flex flex-col gap-3 rounded-xl bg-ink-925 p-4 shadow-card sm:flex-row sm:items-start sm:justify-between">
       <div className="flex min-w-0 items-center gap-3">
         <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-signal-cyan/[0.10] text-signal-cyan">
           <Radar aria-hidden="true" className="h-[18px] w-[18px]" />
         </span>
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-[15px] font-semibold text-white">{title}</h2>
             <StatusPill tone={analyzing ? "running" : "idle"}>{analyzing ? "running" : "idle"}</StatusPill>
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <PipelinePhaseChip label="Analyse" />
+            <span aria-hidden="true" className="text-[11px] text-ink-600">›</span>
+            <PipelinePhaseChip label="Search" />
+            <span aria-hidden="true" className="text-[11px] text-ink-600">›</span>
+            <PipelinePhaseChip label="Grab" />
+            {quota !== undefined ? (
+              <>
+                <span aria-hidden="true" className="mx-0.5 h-3 w-px bg-white/[0.08]" />
+                <span className={clsx("font-mono text-[11.5px] tabular-nums", searchLow ? "text-signal-amber" : "text-ink-500")}>
+                  Search {quota.search.remaining}/{quota.search.limit}
+                </span>
+                <span aria-hidden="true" className="px-0.5 text-[11px] text-ink-600">·</span>
+                <span className={clsx("font-mono text-[11.5px] tabular-nums", grabLow ? "text-signal-amber" : "text-ink-500")}>
+                  Grab {quota.grab.remaining}/{quota.grab.limit}
+                </span>
+              </>
+            ) : null}
           </div>
           <p className="mt-0.5 truncate text-[13px] text-ink-500">{statusMessage}</p>
         </div>
       </div>
-      <IconButton disabled={analyzing} icon={Radar} label={`Analyze all ${title}`} onClick={onAnalyze} tone="primary">
-        {analyzing ? "Analyzing..." : "Analyze all"}
-      </IconButton>
+      <div className="flex shrink-0 items-center gap-2">
+        <button
+          className="h-9 rounded-md border border-white/10 bg-white/[0.02] px-3 text-[13px] font-medium text-ink-400 shadow-surface transition-[background-color,border-color,color,box-shadow,scale] duration-150 ease-out active:scale-[0.96] hover:bg-white/[0.07] hover:text-white hover:shadow-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={analyzing}
+          onClick={onAnalyze}
+          title="Run analyse only — no search or grab"
+          type="button"
+        >
+          Analyse only
+        </button>
+        <IconButton
+          disabled={analyzing}
+          icon={Play}
+          label={`Run full pipeline for ${title}`}
+          onClick={onRunPipeline}
+          tone="primary"
+        >
+          {analyzing ? "Running…" : "Run pipeline"}
+        </IconButton>
+      </div>
     </section>
+  );
+}
+
+function PipelinePhaseChip({ label }: { label: string }) {
+  return (
+    <span className="inline-flex h-5 items-center rounded px-1.5 text-[11px] font-medium text-ink-500 ring-1 ring-inset ring-white/[0.07]">
+      {label}
+    </span>
   );
 }
 
