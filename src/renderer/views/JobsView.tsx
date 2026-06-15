@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Ban, Check, ChevronDown, Copy } from "lucide-react";
+import { Ban, Check, ChevronDown, Copy, RotateCcw } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
-import { cancelJob, listJobEvents, listJobs, subscribeToJobEvents } from "../state/ipc-client";
+import { cancelJob, listJobEvents, listJobs, resumeJob, subscribeToJobEvents } from "../state/ipc-client";
 import { createRefreshScheduler } from "../state/refresh-scheduler";
 import type { JobEventView, JobStatus, JobView } from "../../shared/ipc-contracts";
 
@@ -75,6 +75,14 @@ export function JobsView() {
     [refreshEvents, refreshJobs],
   );
 
+  const resumeSelectedJob = useCallback(
+    async (jobId: string) => {
+      await resumeJob(jobId);
+      await refreshJobs();
+    },
+    [refreshJobs],
+  );
+
   useEffect(() => {
     void refreshJobs();
     const scheduler = createRefreshScheduler(refreshJobs, { minimumDelayMs: 1_000 });
@@ -121,6 +129,20 @@ export function JobsView() {
         cell: ({ row }) => (
           <div className="flex gap-2">
             <IconButton className="px-0" icon={ChevronDown} label={`Show events for ${row.original.job}`} onClick={() => selectJob(row.original.id)} />
+            {row.original.status === "blocked_by_budget" && row.original.actions === "combined" ? (
+              <IconButton
+                className="px-0"
+                disabled={row.original.target === "selected"}
+                icon={RotateCcw}
+                label={
+                  row.original.target === "selected"
+                    ? "Re-select items and start pipeline again"
+                    : "Resume pipeline — already processed items are skipped automatically"
+                }
+                onClick={() => void resumeSelectedJob(row.original.id)}
+                tone="default"
+              />
+            ) : null}
             <IconButton
               className="px-0"
               disabled={isFinished(row.original.status)}
@@ -137,7 +159,7 @@ export function JobsView() {
         size: 152,
       },
     ],
-    [cancelSelectedJob, selectJob],
+    [cancelSelectedJob, resumeSelectedJob, selectJob],
   );
 
   const activeEvents = events;
