@@ -339,7 +339,7 @@ export function PipelineSection({
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <button
-          className="h-9 rounded-md border border-white/10 bg-white/[0.02] px-3 text-[13px] font-medium text-ink-400 shadow-surface transition-[background-color,border-color,color,box-shadow,scale] duration-150 ease-out active:scale-[0.96] hover:bg-white/[0.07] hover:text-white hover:shadow-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
+          className="h-9 rounded-md border border-white/10 bg-white/[0.02] px-3 text-[13px] font-medium text-ink-400 shadow-surface transition-[background-color,border-color,color,box-shadow,scale] duration-150 ease-out active:scale-[0.96] hover:bg-white/[0.07] hover:text-white hover:shadow-surface-hover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-white/[0.02] disabled:hover:text-ink-400 disabled:hover:shadow-surface"
           disabled={analyzing}
           onClick={onAnalyze}
           title="Run analyse only — no search or grab"
