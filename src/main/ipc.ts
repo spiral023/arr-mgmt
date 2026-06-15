@@ -98,7 +98,11 @@ export function registerIpcHandlers(state: IpcState): void {
   });
   ipcMain.handle("jobs:runCombined", (_event, payload: unknown): ArrActionResult => {
     const input = assertRunCombinedInput(payload);
-    const job = enqueueCombinedJob(state, input.target, { seriesIds: input.seriesIds, movieIds: input.movieIds });
+    const job = enqueueCombinedJob(
+      state,
+      input.target,
+      input.target === "selected" ? { seriesIds: input.seriesIds, movieIds: input.movieIds } : undefined,
+    );
     return { ok: true, jobId: job.id, message: `Pipeline queued for ${input.target}` };
   });
   ipcMain.handle("jobs:resume", (_event, payload: unknown): ArrActionResult => {
@@ -1416,7 +1420,7 @@ function assertRunCombinedInput(payload: unknown): RunCombinedInput {
   if (value.target !== "sonarr" && value.target !== "radarr" && value.target !== "all" && value.target !== "selected") {
     throw new Error("Invalid target for runCombined — must be sonarr, radarr, all, or selected");
   }
-  return {
+  const result = {
     target: value.target,
     seriesIds: Array.isArray(value.seriesIds)
       ? value.seriesIds.filter((id): id is number => Number.isInteger(id) && id > 0)
@@ -1425,6 +1429,10 @@ function assertRunCombinedInput(payload: unknown): RunCombinedInput {
       ? value.movieIds.filter((id): id is number => Number.isInteger(id) && id > 0)
       : undefined,
   };
+  if (result.target === "selected" && !result.seriesIds?.length && !result.movieIds?.length) {
+    throw new Error("target 'selected' requires at least one seriesId or movieId");
+  }
+  return result;
 }
 
 function formatDateTime(value: string | undefined): string {
