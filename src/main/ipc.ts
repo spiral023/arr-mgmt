@@ -425,6 +425,7 @@ async function runCombinedWorkflow(
         context.addEvent("info", "Phase 3/3 — Grab (radarr): no movies with pending candidates, skipping");
       }
     }
+    context.throwIfCancelled();
   }
 }
 
