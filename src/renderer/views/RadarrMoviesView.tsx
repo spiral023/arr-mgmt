@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ColumnDef, ColumnFiltersState, Row } from "@tanstack/react-table";
-import { ExternalLink, Eye, Radar, Search, Zap } from "lucide-react";
+import { ExternalLink, Eye, Play, Radar, Search, Zap } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { MediaDetailLists } from "../components/MediaDetailLists";
@@ -10,17 +10,17 @@ import { useItemDetails } from "../state/use-item-details";
 import { updateColumnFilter, type TableFilterValue } from "../state/table-state";
 import { usePersistedTableState } from "../state/use-persisted-table-state";
 import {
-  AnalysisSection,
   BooleanCell,
   CountChip,
   DateCell,
   FilterChip,
   FilterSelect,
   NumberCell,
+  PipelineSection,
   ShareCell,
   TitleCell,
 } from "./SonarrSeriesView";
-import type { MediaItemDetails, RadarrMovieTableRow } from "../../shared/ipc-contracts";
+import type { MediaItemDetails, QuotaSummary, RadarrMovieTableRow } from "../../shared/ipc-contracts";
 
 type MovieStatus = RadarrMovieTableRow["status"];
 
@@ -37,7 +37,9 @@ export function RadarrMoviesView({
   onGrab,
   onLoadDetails,
   onOpenInRadarr,
+  onRunPipeline,
   onSearch,
+  quota,
   rows: liveRows,
   statusMessage = "Ready",
 }: {
@@ -46,7 +48,9 @@ export function RadarrMoviesView({
   onGrab?: (movieIds: number[]) => void;
   onLoadDetails?: (kind: "series" | "movie", arrId: number) => Promise<MediaItemDetails>;
   onOpenInRadarr?: (movieId: number) => void;
+  onRunPipeline?: (movieIds?: number[]) => void;
   onSearch?: (movieIds: number[]) => void;
+  quota?: QuotaSummary;
   rows?: RadarrMovieTableRow[];
   statusMessage?: string;
 }) {
@@ -203,7 +207,14 @@ export function RadarrMoviesView({
 
   return (
     <div className="flex flex-col gap-4">
-      <AnalysisSection analyzing={analyzing} onAnalyze={() => onAnalyze?.()} statusMessage={statusMessage} title="Radarr Analysis" />
+      <PipelineSection
+        analyzing={analyzing}
+        onAnalyze={() => onAnalyze?.()}
+        onRunPipeline={() => onRunPipeline?.()}
+        quota={quota}
+        statusMessage={statusMessage}
+        title="Radarr Pipeline"
+      />
 
       <DataTable
         bulkActions={(selectedRows) => (
@@ -222,6 +233,15 @@ export function RadarrMoviesView({
             </IconButton>
             <IconButton icon={Zap} label="Grab selected pending Radarr FuN releases" onClick={() => onGrab?.(selectedRows.map((row) => row.original.arrId))} tone="warning">
               Grab selected
+            </IconButton>
+            <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-white/[0.08]" />
+            <IconButton
+              icon={Play}
+              label="Run full pipeline for selected Radarr movies"
+              onClick={() => onRunPipeline?.(selectedRows.map((row) => row.original.arrId))}
+              tone="primary"
+            >
+              Run pipeline
             </IconButton>
           </>
         )}
