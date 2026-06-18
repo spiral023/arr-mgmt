@@ -1240,7 +1240,7 @@ export function createRepositories(db: AppDatabase) {
     },
 
     automationWorkItems: {
-      reconcile(goalId: number, desiredItems: AutomationWorkItemReconcileInput[]): void {
+      reconcile(goalId: number, desiredItems: AutomationWorkItemReconcileInput[], now = desiredItems[0]?.now ?? new Date()): void {
         const upsertWorkItem = db.prepare(
           `insert into automation_work_items (
              goal_id,
@@ -1277,7 +1277,7 @@ export function createRepositories(db: AppDatabase) {
            where goal_id = ?`,
         );
         const markOutOfScope = db.prepare("update automation_work_items set status = 'out_of_scope', updated_at = ? where id = ?");
-        const reconcileItems = db.transaction((items: AutomationWorkItemReconcileInput[]) => {
+        const reconcileItems = db.transaction((items: AutomationWorkItemReconcileInput[], reconciledAt: Date) => {
           const desiredKeys = new Set<string>();
 
           for (const item of items) {
@@ -1300,11 +1300,7 @@ export function createRepositories(db: AppDatabase) {
             );
           }
 
-          if (items.length === 0) {
-            return;
-          }
-
-          const now = toIso(items[0].now);
+          const now = toIso(reconciledAt);
           const existingItems = listExisting.all(goalId) as Array<{
             id: number;
             instanceId: number;
@@ -1318,7 +1314,7 @@ export function createRepositories(db: AppDatabase) {
           }
         });
 
-        reconcileItems(desiredItems);
+        reconcileItems(desiredItems, now);
       },
 
       listForGoal(goalId: number): AutomationWorkItemView[] {
@@ -1679,6 +1675,7 @@ type AutomationGoalRow = {
 type AutomationGoalMetrics = {
   currentFunShare: number;
   matchingFiles: number;
+  totalWorkItems: number;
   remainingNonFunFiles: number;
   pendingCandidates: number;
 };
@@ -1727,27 +1724,58 @@ function getAutomationGoalMetrics(db: AppDatabase, goalId: number, scope: Automa
   const workItems = db
     .prepare(
       `select
-         count(*) as matchingFiles,
+         count(*) as totalWorkItems,
+         coalesce(sum(case when status <> 'out_of_scope' then 1 else 0 end), 0) as matchingFiles,
+         coalesce(sum(case when status <> 'out_of_scope' and is_fun = 1 then 1 else 0 end), 0) as matchingFunFiles,
          coalesce(sum(case when is_fun = 0 and status not in ('satisfied', 'out_of_scope') then 1 else 0 end), 0) as remainingNonFunFiles
        from automation_work_items
        where goal_id = ?`,
     )
-    .get(goalId) as { matchingFiles: number; remainingNonFunFiles: number };
-  const pendingCandidates = db
-    .prepare(
-      `select count(*) as count
-       from release_candidates rc
-       join media_items mi on mi.id = rc.media_item_id
-       join instances i on i.id = mi.instance_id
-       where rc.is_fun = 1
-         and (? = 'both' or i.kind = ?)`,
-    )
-    .get(scope, scope) as { count: number };
+    .get(goalId) as {
+    totalWorkItems: number;
+    matchingFiles: number;
+    matchingFunFiles: number;
+    remainingNonFunFiles: number;
+  };
+  const hasWorkItems = workItems.totalWorkItems > 0;
+  const pendingCandidates = hasWorkItems
+    ? (db
+        .prepare(
+          `select count(*) as count
+           from release_candidates rc
+           join media_items mi on mi.id = rc.media_item_id
+           join instances i on i.id = mi.instance_id
+           join automation_work_items awi on awi.goal_id = ?
+             and awi.instance_id = rc.instance_id
+             and awi.child_arr_id = rc.child_arr_id
+             and awi.kind = case when mi.kind = 'movie' then 'movie' else 'episode' end
+             and awi.status <> 'out_of_scope'
+           where rc.is_fun = 1
+             and (? = 'both' or i.kind = ?)`,
+        )
+        .get(goalId, scope, scope) as { count: number })
+    : (db
+        .prepare(
+          `select count(*) as count
+           from release_candidates rc
+           join media_items mi on mi.id = rc.media_item_id
+           join instances i on i.id = mi.instance_id
+           where rc.is_fun = 1
+             and (? = 'both' or i.kind = ?)`,
+        )
+        .get(scope, scope) as { count: number });
 
   return {
-    currentFunShare: media.totalFiles === 0 ? 0 : media.funFiles / media.totalFiles,
-    matchingFiles: workItems.matchingFiles > 0 ? workItems.matchingFiles : media.totalFiles,
-    remainingNonFunFiles: workItems.matchingFiles > 0 ? workItems.remainingNonFunFiles : media.nonFunFiles,
+    currentFunShare: hasWorkItems
+      ? workItems.matchingFiles === 0
+        ? 0
+        : workItems.matchingFunFiles / workItems.matchingFiles
+      : media.totalFiles === 0
+        ? 0
+        : media.funFiles / media.totalFiles,
+    matchingFiles: hasWorkItems ? workItems.matchingFiles : media.totalFiles,
+    totalWorkItems: workItems.totalWorkItems,
+    remainingNonFunFiles: hasWorkItems ? workItems.remainingNonFunFiles : media.nonFunFiles,
     pendingCandidates: pendingCandidates.count,
   };
 }

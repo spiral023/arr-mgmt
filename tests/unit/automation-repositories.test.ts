@@ -172,7 +172,138 @@ describe("automation repositories", () => {
     ]);
     expect(repos.automationEvents.list(goal.id, 10)).toEqual([expect.objectContaining({ message: "Started" })]);
   });
+
+  it("marks existing work items out of scope when reconciling an empty desired item list", () => {
+    const { goal, repos, workItems } = createAutomationFixture();
+
+    repos.automationWorkItems.reconcile(goal.id, [workItems[1]]);
+    repos.automationWorkItems.reconcile(goal.id, [], new Date("2026-06-18T10:06:00.000Z"));
+
+    expect(repos.automationWorkItems.listForGoal(goal.id)).toEqual([
+      expect.objectContaining({
+        childArrId: 102,
+        status: "out_of_scope",
+        updatedAt: "2026-06-18T10:06:00.000Z",
+      }),
+    ]);
+  });
+
+  it("marks only removed desired work items out of scope when reconciling down to one item", () => {
+    const { goal, repos, workItems } = createAutomationFixture();
+
+    repos.automationWorkItems.reconcile(goal.id, workItems);
+    repos.automationWorkItems.reconcile(goal.id, [workItems[0]], new Date("2026-06-18T10:06:00.000Z"));
+
+    expect(repos.automationWorkItems.listForGoal(goal.id)).toEqual([
+      expect.objectContaining({
+        childArrId: 101,
+        status: "pending",
+        updatedAt: "2026-06-18T10:05:00.000Z",
+      }),
+      expect.objectContaining({
+        childArrId: 102,
+        status: "out_of_scope",
+        updatedAt: "2026-06-18T10:06:00.000Z",
+      }),
+    ]);
+  });
+
+  it("excludes out-of-scope work items from goal metrics", () => {
+    const { goal, instanceId, mediaItemId, repos, workItems } = createAutomationFixture();
+
+    repos.releaseCandidates.insert({
+      instanceId,
+      mediaItemId,
+      childArrId: 102,
+      release: { guid: "candidate-102", title: "Example.Series.S01E02.FuN", releaseGroup: "FuN" },
+      foundAt: new Date("2026-06-18T10:07:00.000Z"),
+    });
+    repos.automationWorkItems.reconcile(goal.id, workItems);
+    repos.automationWorkItems.reconcile(goal.id, [workItems[0]], new Date("2026-06-18T10:06:00.000Z"));
+
+    expect(repos.automationGoals.find(goal.id)).toMatchObject({
+      currentFunShare: 1,
+      matchingFiles: 1,
+      pendingCandidates: 0,
+      remainingNonFunFiles: 0,
+      status: "target_reached",
+    });
+    expect(repos.automationGoals.list()).toEqual([
+      expect.objectContaining({
+        id: goal.id,
+        currentFunShare: 1,
+        matchingFiles: 1,
+        pendingCandidates: 0,
+        remainingNonFunFiles: 0,
+        status: "target_reached",
+      }),
+    ]);
+  });
 });
+
+function createAutomationFixture() {
+  const db = createInMemoryDatabase();
+  migrateDatabase(db);
+  const repos = createRepositories(db);
+  const instanceId = repos.instances.upsert({
+    kind: "sonarr",
+    name: "Sonarr",
+    baseUrl: "http://sonarr.local:8989",
+    apiKeyEncrypted: "encrypted",
+    enabled: true,
+    now: new Date("2026-06-18T10:00:00.000Z"),
+  });
+  const mediaItemId = repos.mediaItems.upsertAnalysis(instanceId, analysis());
+  const goal = repos.automationGoals.upsert({
+    name: "Goal",
+    enabled: true,
+    scope: "sonarr",
+    targetFunShare: 0.95,
+    filters: defaultFilters,
+    actionMode: "search_and_grab",
+    executionStrategy: "grab_immediately",
+    ordering: "oldest_search_first",
+    minSearchIntervalHours: 168,
+    runOnStartup: true,
+    schedule: null,
+    now: new Date("2026-06-18T10:00:00.000Z"),
+  });
+  const files = repos.mediaFiles.listForAutomation({ scope: "sonarr" });
+  const workItems = [
+    {
+      instanceId,
+      mediaItemId,
+      mediaFileId: files[0].mediaFileId,
+      childArrId: 101,
+      kind: "episode" as const,
+      title: "Example Series S01E01",
+      sortKey: "example series s01e01",
+      isFun: true,
+      lastAnalyzedAt: "2026-06-18T10:00:00.000Z",
+      lastSearchedAt: files[0].lastSearchedAt,
+      lastGrabbedAt: files[0].lastGrabbedAt,
+      status: "pending" as const,
+      now: new Date("2026-06-18T10:05:00.000Z"),
+    },
+    {
+      instanceId,
+      mediaItemId,
+      mediaFileId: files[1].mediaFileId,
+      childArrId: 102,
+      kind: "episode" as const,
+      title: "Example Series S01E02",
+      sortKey: "example series s01e02",
+      isFun: false,
+      lastAnalyzedAt: "2026-06-18T10:00:00.000Z",
+      lastSearchedAt: files[1].lastSearchedAt,
+      lastGrabbedAt: files[1].lastGrabbedAt,
+      status: "pending" as const,
+      now: new Date("2026-06-18T10:06:00.000Z"),
+    },
+  ];
+
+  return { goal, instanceId, mediaItemId, repos, workItems };
+}
 
 function analysis(): MediaItemAnalysis {
   return {
