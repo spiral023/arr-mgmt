@@ -158,6 +158,23 @@ describe("AutomationRunner", () => {
     );
   });
 
+  it("runGoal marks the run waiting_for_quota when the executor stops on hard quota", async () => {
+    const { goal, repos } = createFixture();
+    const runner = createRunner(repos, {
+      executor: () => ({ completed: 0, stoppedByQuota: "search" }),
+    });
+
+    const run = await runner.runGoal(goal.id);
+
+    expect(run).toEqual(expect.objectContaining({ status: "waiting_for_quota", progressCurrent: 0, progressTotal: 1 }));
+    expect(repos.automationGoals.find(goal.id)).toEqual(
+      expect.objectContaining({ lastError: undefined, nextEligibleRunAt: "2026-06-19T12:00:00.000Z", status: "waiting_for_quota" }),
+    );
+    expect(repos.automationEvents.list(goal.id, 10)[0]).toEqual(
+      expect.objectContaining({ level: "warning", message: "Quota exhausted for search; next eligible at 2026-06-19T12:00:00.000Z" }),
+    );
+  });
+
   it("runEligible startup runs only enabled active startup goals whose nextEligibleRunAt is due", async () => {
     const { db, repos } = createFixture();
     const dueStartupGoal = repos.automationGoals.upsert(goalInput({ name: "Due startup", runOnStartup: true }));

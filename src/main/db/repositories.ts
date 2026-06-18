@@ -1349,6 +1349,69 @@ export function createRepositories(db: AppDatabase) {
           .all(goalId) as AutomationWorkItemRow[];
         return rows.map(formatAutomationWorkItemRow);
       },
+
+      updateStatus(
+        id: number,
+        input: {
+          status: AutomationWorkItemStatus;
+          lastSearchedAt?: Date | null;
+          lastGrabbedAt?: Date | null;
+          incrementSearchAttempt?: boolean;
+          lastError?: string | null;
+          updatedAt: Date;
+        },
+      ): AutomationWorkItemView | undefined {
+        const hasLastSearchedAt = hasOwn(input, "lastSearchedAt");
+        const hasLastGrabbedAt = hasOwn(input, "lastGrabbedAt");
+        const hasLastError = hasOwn(input, "lastError");
+        db.prepare(
+          `update automation_work_items
+           set status = ?,
+               last_searched_at = case when ? then ? else last_searched_at end,
+               last_grabbed_at = case when ? then ? else last_grabbed_at end,
+               search_attempt_count = search_attempt_count + ?,
+               last_error = case when ? then ? else last_error end,
+               updated_at = ?
+           where id = ?`,
+        ).run(
+          input.status,
+          hasLastSearchedAt ? 1 : 0,
+          input.lastSearchedAt ? toIso(input.lastSearchedAt) : null,
+          hasLastGrabbedAt ? 1 : 0,
+          input.lastGrabbedAt ? toIso(input.lastGrabbedAt) : null,
+          input.incrementSearchAttempt ? 1 : 0,
+          hasLastError ? 1 : 0,
+          input.lastError ?? null,
+          toIso(input.updatedAt),
+          id,
+        );
+
+        const row = db
+          .prepare(
+            `select
+               id,
+               goal_id as goalId,
+               instance_id as instanceId,
+               media_item_id as mediaItemId,
+               media_file_id as mediaFileId,
+               child_arr_id as childArrId,
+               kind,
+               title,
+               sort_key as sortKey,
+               is_fun as isFun,
+               status,
+               last_analyzed_at as lastAnalyzedAt,
+               last_searched_at as lastSearchedAt,
+               last_grabbed_at as lastGrabbedAt,
+               search_attempt_count as searchAttemptCount,
+               last_error as lastError,
+               updated_at as updatedAt
+             from automation_work_items
+             where id = ?`,
+          )
+          .get(id) as AutomationWorkItemRow | undefined;
+        return row ? formatAutomationWorkItemRow(row) : undefined;
+      },
     },
 
     automationRuns: {

@@ -13,6 +13,7 @@ import { defaultAppSettings } from "../settings/app-settings";
 import { matchesAutomationFilters } from "./filtering";
 import { orderAutomationWorkItems } from "./ordering";
 import { nextQuotaEligibleAt, shouldStopForQuotaSafety } from "./quota-safety";
+import { AutomationQuotaSafetyError } from "./automation-executor";
 import type { AutomationMediaFile, DesiredAutomationWorkItem } from "./automation-types";
 
 type Repositories = ReturnType<typeof createRepositories>;
@@ -35,7 +36,10 @@ export type AutomationExecutionAdapter = (input: {
   run: AutomationRunView;
   workItems: AutomationWorkItemView[];
   context?: JobContext;
-}) => Promise<{ completed: number } | void> | { completed: number } | void;
+}) =>
+  | Promise<{ completed: number; stoppedByQuota?: "search" | "grab" } | void>
+  | { completed: number; stoppedByQuota?: "search" | "grab" }
+  | void;
 
 export class AutomationRunner {
   private readonly repositories: Repositories;
@@ -161,9 +165,41 @@ export class AutomationRunner {
       const result = await this.executor({ goal: reconciledGoal, run, workItems: actionableItems, context });
       const completed = result?.completed ?? 0;
       context?.setProgress(completed, actionableItems.length);
-      this.insertEvent(goalId, run.id, "info", "Runner skeleton completed; execution adapter not installed", this.now());
+      if (result?.stoppedByQuota) {
+        const eligibleAt = nextQuotaEligibleAt(this.now(), 24);
+        this.repositories.automationGoals.markRunResult(goalId, {
+          lastRunAt: this.now(),
+          nextEligibleRunAt: eligibleAt,
+          lastError: null,
+        });
+        this.insertEvent(
+          goalId,
+          run.id,
+          "warning",
+          `Quota exhausted for ${result.stoppedByQuota}; next eligible at ${eligibleAt.toISOString()}`,
+          this.now(),
+        );
+        return this.finishRun(run, "waiting_for_quota", completed, actionableItems.length);
+      }
+      this.insertEvent(goalId, run.id, "info", `Execution adapter completed ${completed} work items`, this.now());
       return this.finishRun(run, "completed", completed, actionableItems.length);
     } catch (error) {
+      if (error instanceof AutomationQuotaSafetyError) {
+        const eligibleAt = nextQuotaEligibleAt(this.now(), 24);
+        this.repositories.automationGoals.markRunResult(goalId, {
+          lastRunAt: this.now(),
+          nextEligibleRunAt: eligibleAt,
+          lastError: null,
+        });
+        this.insertEvent(
+          goalId,
+          run.id,
+          "warning",
+          `Quota exhausted for ${error.action}; next eligible at ${eligibleAt.toISOString()}`,
+          this.now(),
+        );
+        return this.finishRun(run, "waiting_for_quota", error.completed, run.progressTotal);
+      }
       return this.failRun(run, error);
     }
   }

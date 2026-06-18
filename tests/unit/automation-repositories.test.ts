@@ -301,6 +301,49 @@ describe("automation repositories", () => {
     ]);
   });
 
+  it("updates automation work item status, timestamps, attempts, and error details", () => {
+    const { goal, repos, workItems } = createAutomationFixture();
+    repos.automationWorkItems.reconcile(goal.id, [workItems[1]]);
+    const item = repos.automationWorkItems.listForGoal(goal.id)[0];
+
+    repos.automationWorkItems.updateStatus(item.id, {
+      status: "failed",
+      lastSearchedAt: new Date("2026-06-18T10:07:00.000Z"),
+      incrementSearchAttempt: true,
+      lastError: "ARR search failed",
+      updatedAt: new Date("2026-06-18T10:07:01.000Z"),
+    });
+
+    expect(repos.automationWorkItems.listForGoal(goal.id)).toEqual([
+      expect.objectContaining({
+        id: item.id,
+        lastError: "ARR search failed",
+        lastSearchedAt: "2026-06-18T10:07:00.000Z",
+        searchAttemptCount: 1,
+        status: "failed",
+        updatedAt: "2026-06-18T10:07:01.000Z",
+      }),
+    ]);
+
+    repos.automationWorkItems.updateStatus(item.id, {
+      status: "grabbed",
+      lastGrabbedAt: new Date("2026-06-18T10:08:00.000Z"),
+      lastError: null,
+      updatedAt: new Date("2026-06-18T10:08:01.000Z"),
+    });
+
+    expect(repos.automationWorkItems.listForGoal(goal.id)).toEqual([
+      expect.objectContaining({
+        id: item.id,
+        lastError: null,
+        lastGrabbedAt: "2026-06-18T10:08:00.000Z",
+        searchAttemptCount: 1,
+        status: "grabbed",
+        updatedAt: "2026-06-18T10:08:01.000Z",
+      }),
+    ]);
+  });
+
   it("excludes out-of-scope work items from goal metrics", () => {
     const { goal, instanceId, mediaItemId, repos, workItems } = createAutomationFixture();
 
