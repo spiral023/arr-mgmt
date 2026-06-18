@@ -1,0 +1,219 @@
+import { describe, expect, it } from "vitest";
+import type { MediaItemAnalysis } from "../../src/main/arr/arr-types";
+import { createInMemoryDatabase } from "../../src/main/db/client";
+import { migrateDatabase } from "../../src/main/db/migrations";
+import { createRepositories } from "../../src/main/db/repositories";
+import type { AutomationGoalFilters } from "../../src/shared/ipc-contracts";
+
+const defaultFilters = {
+  monitored: "yes",
+  hasFile: "yes",
+  qualityProfiles: ["WEBDL-1080p"],
+  funShare: { operator: "lt", value: 0.95 },
+  analyzed: { mode: "any" },
+  searched: { mode: "older_than", days: 7 },
+  grabbed: { mode: "any" },
+} satisfies AutomationGoalFilters;
+
+describe("automation repositories", () => {
+  it("creates, updates, lists, pauses, resumes, and reorders goals", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+
+    const goal = repos.automationGoals.upsert({
+      name: "Sonarr to 95% FuN",
+      enabled: true,
+      scope: "sonarr",
+      targetFunShare: 0.95,
+      filters: defaultFilters,
+      actionMode: "search_and_grab",
+      executionStrategy: "grab_immediately",
+      ordering: "oldest_search_first",
+      minSearchIntervalHours: 168,
+      runOnStartup: true,
+      schedule: null,
+      now: new Date("2026-06-18T10:00:00.000Z"),
+    });
+
+    expect(goal).toMatchObject({
+      id: 1,
+      name: "Sonarr to 95% FuN",
+      priority: 1,
+      manualStatus: "active",
+      targetFunShare: 0.95,
+    });
+
+    repos.automationGoals.setManualStatus(goal.id, "paused_by_user", new Date("2026-06-18T10:01:00.000Z"));
+    expect(repos.automationGoals.find(goal.id)?.manualStatus).toBe("paused_by_user");
+
+    repos.automationGoals.setManualStatus(goal.id, "active", new Date("2026-06-18T10:02:00.000Z"));
+    expect(repos.automationGoals.find(goal.id)?.manualStatus).toBe("active");
+
+    const updated = repos.automationGoals.upsert({
+      ...goal,
+      name: "Sonarr to 90% FuN",
+      targetFunShare: 0.9,
+      now: new Date("2026-06-18T10:02:30.000Z"),
+    });
+    expect(updated).toMatchObject({ id: goal.id, name: "Sonarr to 90% FuN", targetFunShare: 0.9 });
+
+    const second = repos.automationGoals.upsert({
+      ...goal,
+      id: undefined,
+      name: "Radarr to 95% FuN",
+      scope: "radarr",
+      now: new Date("2026-06-18T10:03:00.000Z"),
+    });
+    repos.automationGoals.reorder([second.id, goal.id], new Date("2026-06-18T10:04:00.000Z"));
+
+    expect(repos.automationGoals.list().map((item) => item.id)).toEqual([second.id, goal.id]);
+  });
+
+  it("upserts work items from media files and records runs/events", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+    const instanceId = repos.instances.upsert({
+      kind: "sonarr",
+      name: "Sonarr",
+      baseUrl: "http://sonarr.local:8989",
+      apiKeyEncrypted: "encrypted",
+      enabled: true,
+      now: new Date("2026-06-18T10:00:00.000Z"),
+    });
+    const mediaItemId = repos.mediaItems.upsertAnalysis(instanceId, analysis());
+    const goal = repos.automationGoals.upsert({
+      name: "Goal",
+      enabled: true,
+      scope: "sonarr",
+      targetFunShare: 0.95,
+      filters: defaultFilters,
+      actionMode: "search_and_grab",
+      executionStrategy: "grab_immediately",
+      ordering: "oldest_search_first",
+      minSearchIntervalHours: 168,
+      runOnStartup: true,
+      schedule: null,
+      now: new Date("2026-06-18T10:00:00.000Z"),
+    });
+
+    repos.activityLog.insert({
+      action: "search",
+      quotaType: "search",
+      status: "success",
+      instanceId,
+      mediaItemId,
+      childArrId: 102,
+      createdAt: new Date("2026-06-18T09:00:00.000Z"),
+    });
+    repos.activityLog.insert({
+      action: "grab",
+      quotaType: "grab",
+      status: "success",
+      instanceId,
+      mediaItemId,
+      childArrId: 102,
+      createdAt: new Date("2026-06-18T09:30:00.000Z"),
+    });
+
+    const files = repos.mediaFiles.listForAutomation({ scope: "sonarr" });
+    expect(files).toHaveLength(2);
+    expect(files[1]).toMatchObject({
+      childArrId: 102,
+      lastGrabbedAt: "2026-06-18T09:30:00.000Z",
+      lastSearchedAt: "2026-06-18T09:00:00.000Z",
+    });
+
+    repos.automationWorkItems.reconcile(goal.id, [
+      {
+        instanceId,
+        mediaItemId,
+        mediaFileId: files[1].mediaFileId,
+        childArrId: 102,
+        kind: "episode",
+        title: "Example Series S01E02",
+        sortKey: "example series s01e02",
+        isFun: false,
+        lastAnalyzedAt: "2026-06-18T10:00:00.000Z",
+        lastSearchedAt: files[1].lastSearchedAt,
+        lastGrabbedAt: files[1].lastGrabbedAt,
+        status: "pending",
+        now: new Date("2026-06-18T10:05:00.000Z"),
+      },
+    ]);
+
+    expect(repos.automationWorkItems.listForGoal(goal.id)).toEqual([
+      expect.objectContaining({
+        childArrId: 102,
+        lastGrabbedAt: "2026-06-18T09:30:00.000Z",
+        lastSearchedAt: "2026-06-18T09:00:00.000Z",
+        status: "pending",
+        title: "Example Series S01E02",
+      }),
+    ]);
+
+    const run = repos.automationRuns.start({
+      goalId: goal.id,
+      trigger: "manual",
+      jobId: "job-1",
+      now: new Date("2026-06-18T10:06:00.000Z"),
+    });
+    repos.automationEvents.insert({
+      goalId: goal.id,
+      runId: run.id,
+      level: "info",
+      message: "Started",
+      createdAt: new Date("2026-06-18T10:06:01.000Z"),
+    });
+
+    expect(repos.automationRuns.listForGoal(goal.id)).toEqual([
+      expect.objectContaining({ id: run.id, status: "running" }),
+    ]);
+    expect(repos.automationEvents.list(goal.id, 10)).toEqual([expect.objectContaining({ message: "Started" })]);
+  });
+});
+
+function analysis(): MediaItemAnalysis {
+  return {
+    arrId: 7,
+    childrenWithFile: 2,
+    files: [
+      {
+        arrFileId: 1001,
+        childArrId: 101,
+        episodeNumber: 1,
+        isFun: true,
+        path: "/tv/example/s01e01.mkv",
+        qualityName: "WEBDL-1080p",
+        releaseGroup: "FuN",
+        seasonNumber: 1,
+        sizeBytes: 1_000,
+      },
+      {
+        arrFileId: 1002,
+        childArrId: 102,
+        episodeNumber: 2,
+        isFun: false,
+        path: "/tv/example/s01e02.mkv",
+        qualityName: "WEBDL-1080p",
+        releaseGroup: "WvF",
+        seasonNumber: 1,
+        sizeBytes: 2_000,
+      },
+    ],
+    funChildren: 1,
+    funShare: 0.5,
+    funSizeBytes: 1_000,
+    hasFile: true,
+    kind: "series",
+    lastAnalyzedAt: "2026-06-18T10:00:00.000Z",
+    monitored: true,
+    nonFunChildren: 1,
+    qualityProfileName: "WEBDL-1080p",
+    title: "Example Series",
+    titleSlug: "example-series",
+    totalChildren: 2,
+    totalSizeBytes: 3_000,
+  };
+}

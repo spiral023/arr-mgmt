@@ -4,6 +4,19 @@ import type { ArrRelease, MediaItemAnalysis } from "../arr/arr-types";
 import type { Job, JobEvent } from "../scheduler/job-runner";
 import { calculateNextRunAt } from "../../shared/schedule";
 import type {
+  AutomationEventView,
+  AutomationGoalFilters,
+  AutomationGoalInput,
+  AutomationGoalStatus,
+  AutomationGoalView,
+  AutomationManualStatus,
+  AutomationOrdering,
+  AutomationRunStatus,
+  AutomationRunTrigger,
+  AutomationRunView,
+  AutomationScope,
+  AutomationWorkItemStatus,
+  AutomationWorkItemView,
   InstanceKind,
   LibrarySummary,
   MediaItemDetails,
@@ -500,6 +513,67 @@ export function createRepositories(db: AppDatabase) {
             foundAt: row.foundAt,
           })),
         };
+      },
+    },
+
+    mediaFiles: {
+      listForAutomation(input: { scope: AutomationScope }): AutomationMediaFileView[] {
+        const rows = db
+          .prepare(
+            `with last_activity as (
+               select
+                 instance_id,
+                 media_item_id,
+                 child_arr_id,
+                 max(case when action = 'search' then created_at end) as lastSearchedAt,
+                 max(case when action = 'grab' then created_at end) as lastGrabbedAt
+               from activity_log
+               where action in ('search', 'grab')
+                 and status in ('started', 'success', 'failed')
+               group by instance_id, media_item_id, child_arr_id
+             )
+             select
+               i.id as instanceId,
+               i.kind as instanceKind,
+               mi.id as mediaItemId,
+               mf.id as mediaFileId,
+               coalesce(mf.child_arr_id, mi.arr_id) as childArrId,
+               case when mi.kind = 'series' then 'episode' else 'movie' end as kind,
+               case
+                 when mi.kind = 'series'
+                   then mi.title || ' S' || printf('%02d', coalesce(mf.season_number, 0)) || 'E' || printf('%02d', coalesce(mf.episode_number, 0))
+                 else mi.title
+               end as title,
+               case
+                 when mi.kind = 'series'
+                   then lower(coalesce(mi.sort_title, mi.title) || ' s' || printf('%02d', coalesce(mf.season_number, 0)) || 'e' || printf('%02d', coalesce(mf.episode_number, 0)))
+                 else lower(coalesce(mi.sort_title, mi.title))
+               end as sortKey,
+               mf.is_fun as isFun,
+               mf.quality_name as qualityName,
+               mf.release_group as releaseGroup,
+               mf.size_bytes as sizeBytes,
+               mf.season_number as seasonNumber,
+               mf.episode_number as episodeNumber,
+               mi.monitored,
+               mi.has_file as hasFile,
+               mi.fun_share as itemFunShare,
+               mi.last_analyzed_at as lastAnalyzedAt,
+               mi.quality_profile_name as qualityProfileName,
+               la.lastSearchedAt,
+               la.lastGrabbedAt
+             from media_files mf
+             join media_items mi on mi.id = mf.media_item_id
+             join instances i on i.id = mi.instance_id
+             left join last_activity la on la.instance_id = i.id
+               and la.media_item_id = mi.id
+               and la.child_arr_id = coalesce(mf.child_arr_id, mi.arr_id)
+             where (? = 'both' or i.kind = ?)
+             order by lower(coalesce(mi.sort_title, mi.title)), mf.season_number, mf.episode_number, mf.id`,
+          )
+          .all(input.scope, input.scope) as AutomationMediaFileRow[];
+
+        return rows.map(formatAutomationMediaFileRow);
       },
     },
 
@@ -1023,6 +1097,355 @@ export function createRepositories(db: AppDatabase) {
       },
     },
 
+    automationGoals: {
+      upsert(input: AutomationGoalInput & { now: Date }): AutomationGoalView {
+        const now = toIso(input.now);
+        const filtersJson = JSON.stringify(input.filters);
+        const scheduleJson = input.schedule ? JSON.stringify(input.schedule) : null;
+
+        if (input.id) {
+          db.prepare(
+            `update automation_goals
+             set name = ?,
+                 enabled = ?,
+                 scope = ?,
+                 target_fun_share = ?,
+                 filters_json = ?,
+                 action_mode = ?,
+                 execution_strategy = ?,
+                 ordering = ?,
+                 min_search_interval_hours = ?,
+                 run_on_startup = ?,
+                 schedule_json = ?,
+                 updated_at = ?
+             where id = ?`,
+          ).run(
+            input.name,
+            input.enabled ? 1 : 0,
+            input.scope,
+            input.targetFunShare,
+            filtersJson,
+            input.actionMode,
+            input.executionStrategy,
+            input.ordering,
+            input.minSearchIntervalHours,
+            input.runOnStartup ? 1 : 0,
+            scheduleJson,
+            now,
+            input.id,
+          );
+        } else {
+          const priorityRow = db.prepare("select coalesce(max(priority), 0) + 1 as priority from automation_goals").get() as {
+            priority: number;
+          };
+          db.prepare(
+            `insert into automation_goals (
+               name,
+               enabled,
+               priority,
+               scope,
+               target_fun_share,
+               filters_json,
+               action_mode,
+               execution_strategy,
+               ordering,
+               min_search_interval_hours,
+               run_on_startup,
+               schedule_json,
+               manual_status,
+               created_at,
+               updated_at
+             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+          ).run(
+            input.name,
+            input.enabled ? 1 : 0,
+            priorityRow.priority,
+            input.scope,
+            input.targetFunShare,
+            filtersJson,
+            input.actionMode,
+            input.executionStrategy,
+            input.ordering,
+            input.minSearchIntervalHours,
+            input.runOnStartup ? 1 : 0,
+            scheduleJson,
+            now,
+            now,
+          );
+        }
+
+        const id =
+          input.id ??
+          (db.prepare("select last_insert_rowid() as id").get() as {
+            id: number;
+          }).id;
+        return this.find(id)!;
+      },
+
+      list(): AutomationGoalView[] {
+        const rows = db
+          .prepare(`${automationGoalSelectSql} order by priority asc, id asc`)
+          .all() as AutomationGoalRow[];
+        return rows.map((row) => formatAutomationGoalRow(db, row));
+      },
+
+      find(id: number): AutomationGoalView | undefined {
+        const row = db.prepare(`${automationGoalSelectSql} where id = ?`).get(id) as AutomationGoalRow | undefined;
+        return row ? formatAutomationGoalRow(db, row) : undefined;
+      },
+
+      delete(id: number): void {
+        db.prepare("delete from automation_goals where id = ?").run(id);
+      },
+
+      reorder(goalIds: number[], now: Date): void {
+        const nowIso = toIso(now);
+        const updatePriority = db.prepare("update automation_goals set priority = ?, updated_at = ? where id = ?");
+        const reorderGoals = db.transaction((ids: number[]) => {
+          ids.forEach((id, index) => updatePriority.run(index + 1, nowIso, id));
+        });
+        reorderGoals(goalIds);
+      },
+
+      setManualStatus(id: number, status: AutomationManualStatus, now: Date): void {
+        db.prepare("update automation_goals set manual_status = ?, updated_at = ? where id = ?").run(status, toIso(now), id);
+      },
+
+      markRunResult(
+        id: number,
+        input: { lastRunAt: Date; nextEligibleRunAt?: Date | null; lastError?: string | null },
+      ): void {
+        const hasNextEligibleRunAt = hasOwn(input, "nextEligibleRunAt");
+        const hasLastError = hasOwn(input, "lastError");
+        const nextEligibleRunAt = input.nextEligibleRunAt ? toIso(input.nextEligibleRunAt) : null;
+        const lastRunAt = toIso(input.lastRunAt);
+
+        db.prepare(
+          `update automation_goals
+           set last_run_at = ?,
+               next_eligible_run_at = case when ? then ? else next_eligible_run_at end,
+               last_error = case when ? then ? else last_error end,
+               updated_at = ?
+           where id = ?`,
+        ).run(
+          lastRunAt,
+          hasNextEligibleRunAt ? 1 : 0,
+          nextEligibleRunAt,
+          hasLastError ? 1 : 0,
+          input.lastError ?? null,
+          lastRunAt,
+          id,
+        );
+      },
+    },
+
+    automationWorkItems: {
+      reconcile(goalId: number, desiredItems: AutomationWorkItemReconcileInput[]): void {
+        const upsertWorkItem = db.prepare(
+          `insert into automation_work_items (
+             goal_id,
+             instance_id,
+             media_item_id,
+             media_file_id,
+             child_arr_id,
+             kind,
+             title,
+             sort_key,
+             is_fun,
+             status,
+             last_analyzed_at,
+             last_searched_at,
+             last_grabbed_at,
+             updated_at
+           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           on conflict(goal_id, instance_id, kind, child_arr_id) do update set
+             media_item_id = excluded.media_item_id,
+             media_file_id = excluded.media_file_id,
+             title = excluded.title,
+             sort_key = excluded.sort_key,
+             is_fun = excluded.is_fun,
+             status = excluded.status,
+             last_analyzed_at = excluded.last_analyzed_at,
+             last_searched_at = excluded.last_searched_at,
+             last_grabbed_at = excluded.last_grabbed_at,
+             last_error = case when excluded.status = 'failed' then automation_work_items.last_error else null end,
+             updated_at = excluded.updated_at`,
+        );
+        const listExisting = db.prepare(
+          `select id, instance_id as instanceId, kind, child_arr_id as childArrId
+           from automation_work_items
+           where goal_id = ?`,
+        );
+        const markOutOfScope = db.prepare("update automation_work_items set status = 'out_of_scope', updated_at = ? where id = ?");
+        const reconcileItems = db.transaction((items: AutomationWorkItemReconcileInput[]) => {
+          const desiredKeys = new Set<string>();
+
+          for (const item of items) {
+            desiredKeys.add(automationWorkItemKey(item.instanceId, item.kind, item.childArrId));
+            upsertWorkItem.run(
+              goalId,
+              item.instanceId,
+              item.mediaItemId,
+              item.mediaFileId ?? null,
+              item.childArrId,
+              item.kind,
+              item.title,
+              item.sortKey,
+              item.isFun ? 1 : 0,
+              item.status,
+              item.lastAnalyzedAt,
+              item.lastSearchedAt,
+              item.lastGrabbedAt,
+              toIso(item.now),
+            );
+          }
+
+          if (items.length === 0) {
+            return;
+          }
+
+          const now = toIso(items[0].now);
+          const existingItems = listExisting.all(goalId) as Array<{
+            id: number;
+            instanceId: number;
+            kind: AutomationWorkItemView["kind"];
+            childArrId: number;
+          }>;
+          for (const item of existingItems) {
+            if (!desiredKeys.has(automationWorkItemKey(item.instanceId, item.kind, item.childArrId))) {
+              markOutOfScope.run(now, item.id);
+            }
+          }
+        });
+
+        reconcileItems(desiredItems);
+      },
+
+      listForGoal(goalId: number): AutomationWorkItemView[] {
+        const rows = db
+          .prepare(
+            `select
+               id,
+               goal_id as goalId,
+               instance_id as instanceId,
+               media_item_id as mediaItemId,
+               media_file_id as mediaFileId,
+               child_arr_id as childArrId,
+               kind,
+               title,
+               sort_key as sortKey,
+               is_fun as isFun,
+               status,
+               last_analyzed_at as lastAnalyzedAt,
+               last_searched_at as lastSearchedAt,
+               last_grabbed_at as lastGrabbedAt,
+               search_attempt_count as searchAttemptCount,
+               last_error as lastError,
+               updated_at as updatedAt
+             from automation_work_items
+             where goal_id = ?
+             order by sort_key collate nocase, id asc`,
+          )
+          .all(goalId) as AutomationWorkItemRow[];
+        return rows.map(formatAutomationWorkItemRow);
+      },
+    },
+
+    automationRuns: {
+      start(input: { goalId: number; trigger: AutomationRunTrigger; jobId?: string | null; now: Date }): AutomationRunView {
+        const jobId = input.jobId && jobExists(db, input.jobId) ? input.jobId : null;
+        const result = db
+          .prepare(
+            `insert into automation_runs (
+               goal_id,
+               job_id,
+               trigger,
+               status,
+               progress_current,
+               progress_total,
+               started_at
+             ) values (?, ?, ?, 'running', 0, 0, ?)`,
+          )
+          .run(input.goalId, jobId, input.trigger, toIso(input.now));
+        return findAutomationRun(db, Number(result.lastInsertRowid))!;
+      },
+
+      finish(
+        id: number,
+        input: { status: AutomationRunStatus; finishedAt: Date; progressCurrent?: number; progressTotal?: number },
+      ): AutomationRunView | undefined {
+        const run = findAutomationRun(db, id);
+        if (!run) {
+          return undefined;
+        }
+        db.prepare(
+          `update automation_runs
+           set status = ?,
+               progress_current = ?,
+               progress_total = ?,
+               finished_at = ?
+           where id = ?`,
+        ).run(
+          input.status,
+          input.progressCurrent ?? run.progressCurrent,
+          input.progressTotal ?? run.progressTotal,
+          toIso(input.finishedAt),
+          id,
+        );
+        return findAutomationRun(db, id);
+      },
+
+      updateProgress(id: number, input: { progressCurrent: number; progressTotal: number }): AutomationRunView | undefined {
+        db.prepare("update automation_runs set progress_current = ?, progress_total = ? where id = ?").run(
+          input.progressCurrent,
+          input.progressTotal,
+          id,
+        );
+        return findAutomationRun(db, id);
+      },
+
+      listForGoal(goalId: number): AutomationRunView[] {
+        const rows = db
+          .prepare(`${automationRunSelectSql} where goal_id = ? order by started_at desc, id desc`)
+          .all(goalId) as AutomationRunRow[];
+        return rows.map(formatAutomationRunRow);
+      },
+    },
+
+    automationEvents: {
+      insert(input: {
+        goalId: number;
+        runId?: number | null;
+        level: AutomationEventView["level"];
+        message: string;
+        createdAt: Date;
+      }): number {
+        const result = db
+          .prepare("insert into automation_events (goal_id, run_id, level, message, created_at) values (?, ?, ?, ?, ?)")
+          .run(input.goalId, input.runId ?? null, input.level, input.message, toIso(input.createdAt));
+        return Number(result.lastInsertRowid);
+      },
+
+      list(goalId: number, limit = 100): AutomationEventView[] {
+        const rows = db
+          .prepare(
+            `select
+               id,
+               goal_id as goalId,
+               run_id as runId,
+               level,
+               message,
+               created_at as createdAt
+             from automation_events
+             where goal_id = ?
+             order by created_at desc, id desc
+             limit ?`,
+          )
+          .all(goalId, limit) as AutomationEventRow[];
+        return rows.map(formatAutomationEventRow);
+      },
+    },
+
     settings: {
       get<T>(key: string, fallback: T): T {
         const row = db.prepare("select value_json as valueJson from settings where key = ?").get(key) as { valueJson: string } | undefined;
@@ -1168,6 +1591,279 @@ export function createRepositories(db: AppDatabase) {
 
 function booleanToNullableInt(value: boolean | undefined): 0 | 1 | null {
   return typeof value === "boolean" ? (value ? 1 : 0) : null;
+}
+
+function hasOwn(object: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+type AutomationMediaFileView = {
+  instanceId: number;
+  instanceKind: InstanceKind;
+  mediaItemId: number;
+  mediaFileId: number;
+  childArrId: number;
+  kind: "episode" | "movie";
+  title: string;
+  sortKey: string;
+  isFun: boolean;
+  qualityName: string | null;
+  releaseGroup: string | null;
+  sizeBytes: number;
+  seasonNumber: number | null;
+  episodeNumber: number | null;
+  monitored: boolean;
+  hasFile: boolean;
+  itemFunShare: number;
+  lastAnalyzedAt: string | null;
+  lastSearchedAt: string | null;
+  lastGrabbedAt: string | null;
+  qualityProfileName: string | null;
+};
+
+type AutomationMediaFileRow = Omit<AutomationMediaFileView, "isFun" | "monitored" | "hasFile"> & {
+  isFun: 0 | 1;
+  monitored: 0 | 1;
+  hasFile: 0 | 1;
+};
+
+function formatAutomationMediaFileRow(row: AutomationMediaFileRow): AutomationMediaFileView {
+  return {
+    ...row,
+    isFun: Boolean(row.isFun),
+    monitored: Boolean(row.monitored),
+    hasFile: Boolean(row.hasFile),
+  };
+}
+
+const automationGoalSelectSql = `select
+  id,
+  name,
+  enabled,
+  priority,
+  scope,
+  target_fun_share as targetFunShare,
+  filters_json as filtersJson,
+  action_mode as actionMode,
+  execution_strategy as executionStrategy,
+  ordering,
+  min_search_interval_hours as minSearchIntervalHours,
+  run_on_startup as runOnStartup,
+  schedule_json as scheduleJson,
+  manual_status as manualStatus,
+  last_run_at as lastRunAt,
+  next_eligible_run_at as nextEligibleRunAt,
+  last_error as lastError
+ from automation_goals`;
+
+type AutomationGoalRow = {
+  id: number;
+  name: string;
+  enabled: 0 | 1;
+  priority: number;
+  scope: AutomationScope;
+  targetFunShare: number;
+  filtersJson: string;
+  actionMode: AutomationGoalInput["actionMode"];
+  executionStrategy: AutomationGoalInput["executionStrategy"];
+  ordering: AutomationOrdering;
+  minSearchIntervalHours: number;
+  runOnStartup: 0 | 1;
+  scheduleJson: string | null;
+  manualStatus: AutomationManualStatus;
+  lastRunAt: string | null;
+  nextEligibleRunAt: string | null;
+  lastError: string | null;
+};
+
+type AutomationGoalMetrics = {
+  currentFunShare: number;
+  matchingFiles: number;
+  remainingNonFunFiles: number;
+  pendingCandidates: number;
+};
+
+function formatAutomationGoalRow(db: AppDatabase, row: AutomationGoalRow): AutomationGoalView {
+  const metrics = getAutomationGoalMetrics(db, row.id, row.scope);
+
+  return {
+    id: row.id,
+    name: row.name,
+    enabled: Boolean(row.enabled),
+    scope: row.scope,
+    targetFunShare: row.targetFunShare,
+    filters: JSON.parse(row.filtersJson) as AutomationGoalFilters,
+    actionMode: row.actionMode,
+    executionStrategy: row.executionStrategy,
+    ordering: row.ordering,
+    minSearchIntervalHours: row.minSearchIntervalHours,
+    runOnStartup: Boolean(row.runOnStartup),
+    schedule: row.scheduleJson ? (JSON.parse(row.scheduleJson) as AutomationGoalInput["schedule"]) : null,
+    priority: row.priority,
+    manualStatus: row.manualStatus,
+    status: deriveAutomationGoalStatus(db, row, metrics),
+    currentFunShare: metrics.currentFunShare,
+    matchingFiles: metrics.matchingFiles,
+    remainingNonFunFiles: metrics.remainingNonFunFiles,
+    pendingCandidates: metrics.pendingCandidates,
+    lastRunAt: row.lastRunAt ?? undefined,
+    nextEligibleRunAt: row.nextEligibleRunAt ?? undefined,
+    lastError: row.lastError ?? undefined,
+  };
+}
+
+function getAutomationGoalMetrics(db: AppDatabase, goalId: number, scope: AutomationScope): AutomationGoalMetrics {
+  const media = db
+    .prepare(
+      `select
+         coalesce(sum(mi.children_with_file), 0) as totalFiles,
+         coalesce(sum(mi.fun_children), 0) as funFiles,
+         coalesce(sum(mi.children_with_file - mi.fun_children), 0) as nonFunFiles
+       from media_items mi
+       join instances i on i.id = mi.instance_id
+       where (? = 'both' or i.kind = ?)`,
+    )
+    .get(scope, scope) as { totalFiles: number; funFiles: number; nonFunFiles: number };
+  const workItems = db
+    .prepare(
+      `select
+         count(*) as matchingFiles,
+         coalesce(sum(case when is_fun = 0 and status not in ('satisfied', 'out_of_scope') then 1 else 0 end), 0) as remainingNonFunFiles
+       from automation_work_items
+       where goal_id = ?`,
+    )
+    .get(goalId) as { matchingFiles: number; remainingNonFunFiles: number };
+  const pendingCandidates = db
+    .prepare(
+      `select count(*) as count
+       from release_candidates rc
+       join media_items mi on mi.id = rc.media_item_id
+       join instances i on i.id = mi.instance_id
+       where rc.is_fun = 1
+         and (? = 'both' or i.kind = ?)`,
+    )
+    .get(scope, scope) as { count: number };
+
+  return {
+    currentFunShare: media.totalFiles === 0 ? 0 : media.funFiles / media.totalFiles,
+    matchingFiles: workItems.matchingFiles > 0 ? workItems.matchingFiles : media.totalFiles,
+    remainingNonFunFiles: workItems.matchingFiles > 0 ? workItems.remainingNonFunFiles : media.nonFunFiles,
+    pendingCandidates: pendingCandidates.count,
+  };
+}
+
+function deriveAutomationGoalStatus(
+  db: AppDatabase,
+  row: AutomationGoalRow,
+  metrics: AutomationGoalMetrics,
+): AutomationGoalStatus {
+  if (!row.enabled || row.manualStatus === "paused_by_user") {
+    return "paused";
+  }
+
+  const running = db
+    .prepare("select 1 as found from automation_runs where goal_id = ? and status = 'running' limit 1")
+    .get(row.id) as { found: 1 } | undefined;
+  if (running) {
+    return "running";
+  }
+
+  if (row.lastError) {
+    return "blocked_by_error";
+  }
+
+  if (metrics.matchingFiles > 0 && metrics.currentFunShare >= row.targetFunShare) {
+    return "target_reached";
+  }
+
+  return "enabled";
+}
+
+type AutomationWorkItemReconcileInput = {
+  instanceId: number;
+  mediaItemId: number;
+  mediaFileId?: number | null;
+  childArrId: number;
+  kind: AutomationWorkItemView["kind"];
+  title: string;
+  sortKey: string;
+  isFun: boolean;
+  lastAnalyzedAt: string | null;
+  lastSearchedAt: string | null;
+  lastGrabbedAt: string | null;
+  status: AutomationWorkItemStatus;
+  now: Date;
+};
+
+type AutomationWorkItemRow = Omit<AutomationWorkItemView, "isFun"> & {
+  isFun: 0 | 1;
+};
+
+function automationWorkItemKey(instanceId: number, kind: AutomationWorkItemView["kind"], childArrId: number): string {
+  return `${instanceId}:${kind}:${childArrId}`;
+}
+
+function formatAutomationWorkItemRow(row: AutomationWorkItemRow): AutomationWorkItemView {
+  return {
+    ...row,
+    isFun: Boolean(row.isFun),
+  };
+}
+
+const automationRunSelectSql = `select
+  id,
+  goal_id as goalId,
+  job_id as jobId,
+  trigger,
+  status,
+  progress_current as progressCurrent,
+  progress_total as progressTotal,
+  started_at as startedAt,
+  finished_at as finishedAt
+ from automation_runs`;
+
+type AutomationRunRow = Omit<AutomationRunView, "jobId" | "finishedAt"> & {
+  jobId: string | null;
+  finishedAt: string | null;
+};
+
+function findAutomationRun(db: AppDatabase, id: number): AutomationRunView | undefined {
+  const row = db.prepare(`${automationRunSelectSql} where id = ?`).get(id) as AutomationRunRow | undefined;
+  return row ? formatAutomationRunRow(row) : undefined;
+}
+
+function jobExists(db: AppDatabase, id: string): boolean {
+  const row = db.prepare("select 1 as found from jobs where id = ?").get(id) as { found: 1 } | undefined;
+  return Boolean(row);
+}
+
+function formatAutomationRunRow(row: AutomationRunRow): AutomationRunView {
+  return {
+    id: row.id,
+    goalId: row.goalId,
+    trigger: row.trigger,
+    status: row.status,
+    progressCurrent: row.progressCurrent,
+    progressTotal: row.progressTotal,
+    startedAt: row.startedAt,
+    jobId: row.jobId ?? undefined,
+    finishedAt: row.finishedAt ?? undefined,
+  };
+}
+
+type AutomationEventRow = Omit<AutomationEventView, "runId"> & {
+  runId: number | null;
+};
+
+function formatAutomationEventRow(row: AutomationEventRow): AutomationEventView {
+  return {
+    id: row.id,
+    goalId: row.goalId,
+    runId: row.runId ?? undefined,
+    level: row.level,
+    message: row.message,
+    createdAt: row.createdAt,
+  };
 }
 
 type ScheduleRow = {

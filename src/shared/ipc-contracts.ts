@@ -291,6 +291,14 @@ export type AutomationActionMode = "search_only" | "search_and_grab";
 export type AutomationExecutionStrategy = "grab_immediately" | "search_then_grab";
 export type AutomationOrdering = "oldest_search_first" | "lowest_fun_share_first" | "largest_impact_first" | "alphabetical";
 export type AutomationManualStatus = "active" | "paused_by_user";
+export type AutomationRunTrigger = "startup" | "schedule" | "manual" | "resume";
+export type AutomationRunStatus =
+  | "running"
+  | "completed"
+  | "waiting_for_quota"
+  | "target_reached"
+  | "blocked_by_error"
+  | "cancelled";
 export type AutomationGoalStatus =
   | "enabled"
   | "running"
@@ -344,6 +352,48 @@ export type AutomationGoalView = AutomationGoalInput & {
   lastRunAt?: string;
   nextEligibleRunAt?: string;
   lastError?: string;
+};
+
+export type AutomationWorkItemStatus =
+  | "pending"
+  | "searching"
+  | "candidate_found"
+  | "grabbed"
+  | "satisfied"
+  | "cooldown"
+  | "out_of_scope"
+  | "failed";
+
+export type AutomationWorkItemView = {
+  id: number;
+  goalId: number;
+  instanceId: number;
+  mediaItemId: number;
+  mediaFileId: number | null;
+  childArrId: number;
+  kind: "episode" | "movie";
+  title: string;
+  sortKey: string;
+  isFun: boolean;
+  status: AutomationWorkItemStatus;
+  lastAnalyzedAt: string | null;
+  lastSearchedAt: string | null;
+  lastGrabbedAt: string | null;
+  searchAttemptCount: number;
+  lastError: string | null;
+  updatedAt: string;
+};
+
+export type AutomationRunView = {
+  id: number;
+  goalId: number;
+  trigger: AutomationRunTrigger;
+  status: AutomationRunStatus;
+  progressCurrent: number;
+  progressTotal: number;
+  startedAt: string;
+  jobId?: string;
+  finishedAt?: string;
 };
 
 export type AutomationEventView = {
