@@ -1,5 +1,39 @@
 import type { AppDatabase } from "./client";
 
+const jobsColumns = `(
+    id text primary key,
+    name text not null,
+    kind text not null check (kind in ('analysis', 'search', 'grab', 'combined', 'automation')),
+    target_scope text not null check (target_scope in ('all', 'sonarr', 'radarr', 'selected')),
+    status text not null check (status in ('queued', 'running', 'blocked_by_budget', 'completed', 'failed', 'cancelled')),
+    progress_current integer not null default 0,
+    progress_total integer not null default 0,
+    success_count integer not null default 0,
+    failure_count integer not null default 0,
+    created_at text not null,
+    started_at text,
+    finished_at text
+  )`;
+
+const jobColumnNames = [
+  "id",
+  "name",
+  "kind",
+  "target_scope",
+  "status",
+  "progress_current",
+  "progress_total",
+  "success_count",
+  "failure_count",
+  "created_at",
+  "started_at",
+  "finished_at",
+];
+
+function createJobsTableStatement(tableName: "jobs" | "jobs_old_automation_kind_constraint", ifNotExists: boolean): string {
+  return `create table ${ifNotExists ? "if not exists " : ""}${tableName} ${jobsColumns}`;
+}
+
 const statements = [
   `create table if not exists instances (
     id integer primary key autoincrement,
@@ -67,20 +101,7 @@ const statements = [
     raw_json text not null,
     found_at text not null
   )`,
-  `create table if not exists jobs (
-    id text primary key,
-    name text not null,
-    kind text not null check (kind in ('analysis', 'search', 'grab', 'combined', 'automation')),
-    target_scope text not null check (target_scope in ('all', 'sonarr', 'radarr', 'selected')),
-    status text not null check (status in ('queued', 'running', 'blocked_by_budget', 'completed', 'failed', 'cancelled')),
-    progress_current integer not null default 0,
-    progress_total integer not null default 0,
-    success_count integer not null default 0,
-    failure_count integer not null default 0,
-    created_at text not null,
-    started_at text,
-    finished_at text
-  )`,
+  createJobsTableStatement("jobs", true),
   `create table if not exists job_events (
     id integer primary key autoincrement,
     job_id text not null references jobs(id) on delete cascade,
@@ -181,7 +202,7 @@ const statements = [
     instance_id integer not null references instances(id) on delete cascade,
     media_item_id integer not null references media_items(id) on delete cascade,
     media_file_id integer references media_files(id) on delete set null,
-    child_arr_id integer,
+    child_arr_id integer not null,
     kind text not null check (kind in ('episode', 'movie')),
     title text not null,
     sort_key text not null,
@@ -219,14 +240,28 @@ const statements = [
 ];
 
 export function migrateDatabase(db: AppDatabase): void {
+  const shouldRebuildJobs = hasLegacyJobsKindConstraint(db);
+  const foreignKeysWereEnabled = shouldRebuildJobs && isForeignKeyEnforcementEnabled(db);
+  if (foreignKeysWereEnabled) {
+    db.pragma("foreign_keys = OFF");
+  }
+
   const migrate = db.transaction(() => {
+    ensureJobsAutomationKindConstraint(db);
     for (const statement of statements) {
       db.prepare(statement).run();
     }
     ensureColumn(db, "media_items", "title_slug", "text");
     ensureColumn(db, "media_items", "quality_profile_name", "text");
   });
-  migrate();
+
+  try {
+    migrate();
+  } finally {
+    if (foreignKeysWereEnabled) {
+      db.pragma("foreign_keys = ON");
+    }
+  }
 }
 
 function ensureColumn(db: AppDatabase, table: string, column: string, type: string): void {
@@ -234,4 +269,48 @@ function ensureColumn(db: AppDatabase, table: string, column: string, type: stri
   if (!columns.some((item) => item.name === column)) {
     db.prepare(`alter table ${table} add column ${column} ${type}`).run();
   }
+}
+
+function ensureJobsAutomationKindConstraint(db: AppDatabase): void {
+  if (!hasLegacyJobsKindConstraint(db)) {
+    return;
+  }
+
+  const oldTableName = "jobs_old_automation_kind_constraint";
+  const legacyAlterTableWasEnabled = isLegacyAlterTableEnabled(db);
+  if (!legacyAlterTableWasEnabled) {
+    db.pragma("legacy_alter_table = ON");
+  }
+
+  try {
+    db.prepare(`alter table jobs rename to ${oldTableName}`).run();
+    db.prepare(createJobsTableStatement("jobs", false)).run();
+    db
+      .prepare(`insert into jobs (${jobColumnNames.join(", ")}) select ${jobColumnNames.join(", ")} from ${oldTableName}`)
+      .run();
+    db.prepare(`drop table ${oldTableName}`).run();
+  } finally {
+    if (!legacyAlterTableWasEnabled) {
+      db.pragma("legacy_alter_table = OFF");
+    }
+  }
+}
+
+function hasLegacyJobsKindConstraint(db: AppDatabase): boolean {
+  const row = db.prepare("select sql from sqlite_master where type = 'table' and name = 'jobs'").get() as
+    | { sql: string | null }
+    | undefined;
+  const sql = row?.sql?.replace(/\s+/g, " ").toLowerCase();
+  return (
+    sql?.includes("kind in ('analysis', 'search', 'grab', 'combined')") === true &&
+    !sql.includes("kind in ('analysis', 'search', 'grab', 'combined', 'automation')")
+  );
+}
+
+function isForeignKeyEnforcementEnabled(db: AppDatabase): boolean {
+  return db.pragma("foreign_keys", { simple: true }) === 1;
+}
+
+function isLegacyAlterTableEnabled(db: AppDatabase): boolean {
+  return db.pragma("legacy_alter_table", { simple: true }) === 1;
 }
