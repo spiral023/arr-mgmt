@@ -70,6 +70,30 @@ describe("automation repositories", () => {
     expect(repos.automationGoals.list().map((item) => item.id)).toEqual([second.id, goal.id]);
   });
 
+  it("throws a clear error when updating a missing automation goal", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+
+    expect(() =>
+      repos.automationGoals.upsert({
+        id: 999,
+        name: "Missing goal",
+        enabled: true,
+        scope: "sonarr",
+        targetFunShare: 0.95,
+        filters: defaultFilters,
+        actionMode: "search_and_grab",
+        executionStrategy: "grab_immediately",
+        ordering: "oldest_search_first",
+        minSearchIntervalHours: 168,
+        runOnStartup: true,
+        schedule: null,
+        now: new Date("2026-06-18T10:00:00.000Z"),
+      }),
+    ).toThrow("Automation goal 999 not found");
+  });
+
   it("upserts work items from media files and records runs/events", () => {
     const db = createInMemoryDatabase();
     migrateDatabase(db);
@@ -171,6 +195,75 @@ describe("automation repositories", () => {
       expect.objectContaining({ id: run.id, status: "running" }),
     ]);
     expect(repos.automationEvents.list(goal.id, 10)).toEqual([expect.objectContaining({ message: "Started" })]);
+  });
+
+  it("lists Radarr movies for automation with activity overlays", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+    const instanceId = repos.instances.upsert({
+      kind: "radarr",
+      name: "Radarr",
+      baseUrl: "http://radarr.local:7878",
+      apiKeyEncrypted: "encrypted",
+      enabled: true,
+      now: new Date("2026-06-18T10:00:00.000Z"),
+    });
+    const mediaItemId = repos.mediaItems.upsertAnalysis(instanceId, {
+      ...analysis(),
+      arrId: 401,
+      childrenWithFile: 1,
+      files: [
+        {
+          arrFileId: 5001,
+          childArrId: 401,
+          isFun: false,
+          path: "/movies/example-movie/example.mkv",
+          qualityName: "WEBDL-1080p",
+          releaseGroup: "WvF",
+          sizeBytes: 4_000,
+        },
+      ],
+      funChildren: 0,
+      funShare: 0,
+      funSizeBytes: 0,
+      kind: "movie",
+      nonFunChildren: 1,
+      title: "Example Movie",
+      titleSlug: undefined,
+      totalChildren: 1,
+      totalSizeBytes: 4_000,
+      year: 2024,
+    });
+
+    repos.activityLog.insert({
+      action: "search",
+      quotaType: "search",
+      status: "success",
+      instanceId,
+      mediaItemId,
+      childArrId: 401,
+      createdAt: new Date("2026-06-18T09:00:00.000Z"),
+    });
+    repos.activityLog.insert({
+      action: "grab",
+      quotaType: "grab",
+      status: "success",
+      instanceId,
+      mediaItemId,
+      childArrId: 401,
+      createdAt: new Date("2026-06-18T09:30:00.000Z"),
+    });
+
+    expect(repos.mediaFiles.listForAutomation({ scope: "radarr" })).toEqual([
+      expect.objectContaining({
+        childArrId: 401,
+        kind: "movie",
+        lastGrabbedAt: "2026-06-18T09:30:00.000Z",
+        lastSearchedAt: "2026-06-18T09:00:00.000Z",
+        title: "Example Movie",
+      }),
+    ]);
   });
 
   it("marks existing work items out of scope when reconciling an empty desired item list", () => {

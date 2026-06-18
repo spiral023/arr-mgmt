@@ -1103,8 +1103,9 @@ export function createRepositories(db: AppDatabase) {
         const filtersJson = JSON.stringify(input.filters);
         const scheduleJson = input.schedule ? JSON.stringify(input.schedule) : null;
 
-        if (input.id) {
-          db.prepare(
+        let id = input.id;
+        if (id !== undefined) {
+          const result = db.prepare(
             `update automation_goals
              set name = ?,
                  enabled = ?,
@@ -1132,13 +1133,16 @@ export function createRepositories(db: AppDatabase) {
             input.runOnStartup ? 1 : 0,
             scheduleJson,
             now,
-            input.id,
+            id,
           );
+          if (result.changes === 0) {
+            throw new Error(`Automation goal ${id} not found`);
+          }
         } else {
           const priorityRow = db.prepare("select coalesce(max(priority), 0) + 1 as priority from automation_goals").get() as {
             priority: number;
           };
-          db.prepare(
+          const result = db.prepare(
             `insert into automation_goals (
                name,
                enabled,
@@ -1172,14 +1176,14 @@ export function createRepositories(db: AppDatabase) {
             now,
             now,
           );
+          id = Number(result.lastInsertRowid);
         }
 
-        const id =
-          input.id ??
-          (db.prepare("select last_insert_rowid() as id").get() as {
-            id: number;
-          }).id;
-        return this.find(id)!;
+        const goal = this.find(id);
+        if (!goal) {
+          throw new Error(`Automation goal ${id} not found`);
+        }
+        return goal;
       },
 
       list(): AutomationGoalView[] {
