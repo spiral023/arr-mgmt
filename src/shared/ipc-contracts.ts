@@ -31,7 +31,17 @@ export type IpcChannel =
   | "radarr:openMovie"
   | "onboarding:complete"
   | "jobs:runCombined"
-  | "jobs:resume";
+  | "jobs:resume"
+  | "automation:listGoals"
+  | "automation:getGoal"
+  | "automation:saveGoal"
+  | "automation:deleteGoal"
+  | "automation:reorderGoals"
+  | "automation:pauseGoal"
+  | "automation:resumeGoal"
+  | "automation:runGoal"
+  | "automation:runEligible"
+  | "automation:listEvents";
 
 export type SonarrSeriesActionInput = {
   seriesIds: number[];
@@ -160,7 +170,7 @@ export type JobStatus = "queued" | "running" | "blocked_by_budget" | "completed"
 export type JobView = {
   id: string;
   name: string;
-  kind: "analysis" | "search" | "grab" | "combined";
+  kind: "analysis" | "search" | "grab" | "combined" | "automation";
   target: "all" | "sonarr" | "radarr" | "selected";
   status: JobStatus;
   progressCurrent: number;
@@ -225,6 +235,7 @@ export type QuotaSummary = {
 };
 
 export type AppSettings = {
+  automation: { quotaSafetyPercent: number };
   cooldownHours: { episodeSearch: number; movieSearch: number };
   fun: { displayName: string; prefixes: string[] };
   notifications: {
@@ -237,6 +248,7 @@ export type AppSettings = {
 };
 
 export type AppSettingsInput = Partial<{
+  automation: Partial<AppSettings["automation"]>;
   cooldownHours: Partial<AppSettings["cooldownHours"]>;
   fun: Partial<AppSettings["fun"]>;
   notifications: Partial<AppSettings["notifications"]>;
@@ -273,6 +285,78 @@ export type ScheduleView = ScheduleInput & {
   nextRunAt: string;
   lastRunAt?: string;
 };
+
+export type AutomationScope = "sonarr" | "radarr" | "both";
+export type AutomationActionMode = "search_only" | "search_and_grab";
+export type AutomationExecutionStrategy = "grab_immediately" | "search_then_grab";
+export type AutomationOrdering = "oldest_search_first" | "lowest_fun_share_first" | "largest_impact_first" | "alphabetical";
+export type AutomationManualStatus = "active" | "paused_by_user";
+export type AutomationGoalStatus =
+  | "enabled"
+  | "running"
+  | "paused"
+  | "waiting_for_quota"
+  | "waiting_for_schedule"
+  | "blocked_by_error"
+  | "target_reached";
+
+export type AutomationTriState = "yes" | "no" | "either";
+export type AutomationRecencyFilter =
+  | { mode: "any" }
+  | { mode: "never" }
+  | { mode: "older_than"; days: number }
+  | { mode: "within_last"; days: number };
+
+export type AutomationGoalFilters = {
+  monitored: AutomationTriState;
+  hasFile: AutomationTriState;
+  qualityProfiles: string[];
+  funShare: { operator: "lt" | "lte" | "gt" | "gte"; value: number } | null;
+  analyzed: AutomationRecencyFilter;
+  searched: AutomationRecencyFilter;
+  grabbed: AutomationRecencyFilter;
+};
+
+export type AutomationGoalInput = {
+  id?: number;
+  name: string;
+  enabled: boolean;
+  scope: AutomationScope;
+  targetFunShare: number;
+  filters: AutomationGoalFilters;
+  actionMode: AutomationActionMode;
+  executionStrategy: AutomationExecutionStrategy;
+  ordering: AutomationOrdering;
+  minSearchIntervalHours: number;
+  runOnStartup: boolean;
+  schedule: Pick<ScheduleInput, "enabled" | "intervalKind" | "intervalValue" | "timeOfDay"> | null;
+};
+
+export type AutomationGoalView = AutomationGoalInput & {
+  id: number;
+  priority: number;
+  manualStatus: AutomationManualStatus;
+  status: AutomationGoalStatus;
+  currentFunShare: number;
+  matchingFiles: number;
+  remainingNonFunFiles: number;
+  pendingCandidates: number;
+  lastRunAt?: string;
+  nextEligibleRunAt?: string;
+  lastError?: string;
+};
+
+export type AutomationEventView = {
+  id: number;
+  goalId: number;
+  runId?: number;
+  level: "info" | "warning" | "error";
+  message: string;
+  createdAt: string;
+};
+
+export type AutomationGoalIdInput = { goalId: number };
+export type AutomationReorderInput = { goalIds: number[] };
 
 export type ScheduleDeleteInput = {
   id: number;

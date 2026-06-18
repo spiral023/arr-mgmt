@@ -6,6 +6,7 @@ type Repositories = ReturnType<typeof createRepositories>;
 const SETTINGS_KEY = "app.settings";
 
 export const defaultAppSettings: AppSettings = {
+  automation: { quotaSafetyPercent: 90 },
   cooldownHours: { episodeSearch: 24, movieSearch: 24 },
   fun: { displayName: "FuN*", prefixes: ["fun"] },
   notifications: {
@@ -29,6 +30,7 @@ export function updateAppSettings(repos: Repositories, input: AppSettingsInput):
 
 function mergeSettings(current: AppSettings, input: AppSettingsInput): AppSettingsInput {
   return {
+    automation: { ...current.automation, ...input.automation },
     cooldownHours: { ...current.cooldownHours, ...input.cooldownHours },
     fun: { ...current.fun, ...input.fun },
     notifications: { ...current.notifications, ...input.notifications },
@@ -39,6 +41,12 @@ function mergeSettings(current: AppSettings, input: AppSettingsInput): AppSettin
 
 function normalizeSettings(input: AppSettingsInput): AppSettings {
   return {
+    automation: {
+      quotaSafetyPercent: percentInteger(
+        input.automation?.quotaSafetyPercent,
+        defaultAppSettings.automation.quotaSafetyPercent,
+      ),
+    },
     cooldownHours: {
       episodeSearch: positiveInteger(input.cooldownHours?.episodeSearch, defaultAppSettings.cooldownHours.episodeSearch),
       movieSearch: positiveInteger(input.cooldownHours?.movieSearch, defaultAppSettings.cooldownHours.movieSearch),
@@ -78,6 +86,10 @@ function normalizePrefixes(value: unknown): string[] {
 
 function positiveInteger(value: unknown, fallback: number): number {
   return Number.isInteger(value) && Number(value) > 0 ? Number(value) : fallback;
+}
+
+function percentInteger(value: unknown, fallback: number): number {
+  return Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 100 ? Number(value) : fallback;
 }
 
 function nonEmptyString(value: unknown, fallback: string): string {

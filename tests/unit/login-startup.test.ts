@@ -18,6 +18,7 @@ describe("login startup settings", () => {
 
 function settingsWithOpenAtLogin(openAtLogin: boolean): AppSettings {
   return {
+    automation: { quotaSafetyPercent: 90 },
     cooldownHours: { episodeSearch: 24, movieSearch: 24 },
     fun: { displayName: "FuN*", prefixes: ["fun"] },
     notifications: { candidatesFound: true, jobFinished: true, quotaExhausted: true },

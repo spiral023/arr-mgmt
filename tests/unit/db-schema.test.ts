@@ -28,6 +28,40 @@ describe("database schema", () => {
     );
   });
 
+  it("creates automation tables", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+
+    const rows = db
+      .prepare("select name from sqlite_master where type = 'table' order by name")
+      .all() as Array<{ name: string }>;
+
+    expect(rows.map((row) => row.name)).toEqual(
+      expect.arrayContaining([
+        "automation_events",
+        "automation_goals",
+        "automation_runs",
+        "automation_work_items",
+      ]),
+    );
+  });
+
+  it("allows automation jobs", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+
+    expect(() =>
+      db
+        .prepare(
+          `insert into jobs (
+        id, name, kind, target_scope, status, progress_current, progress_total,
+        success_count, failure_count, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run("job-automation", "Automation", "automation", "all", "queued", 0, 0, 0, 0, "2026-06-18T00:00:00.000Z"),
+    ).not.toThrow();
+  });
+
   it("queries quota activity within a rolling 24 hour window", () => {
     const db = createInMemoryDatabase();
     migrateDatabase(db);

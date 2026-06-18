@@ -11,6 +11,7 @@ describe("app settings", () => {
     const repos = createRepositories(db);
 
     expect(getAppSettings(repos)).toEqual({
+      automation: { quotaSafetyPercent: 90 },
       cooldownHours: { movieSearch: 24, episodeSearch: 24 },
       fun: { displayName: "FuN*", prefixes: ["fun"] },
       notifications: {
@@ -38,5 +39,19 @@ describe("app settings", () => {
     expect(updated.quota).toEqual({ searchLimit: 25, grabLimit: 400, windowHours: 24 });
     expect(updated.tray).toEqual({ keepRunningOnClose: true, openAtLogin: true, showControls: true });
     expect(getAppSettings(repos)).toEqual(updated);
+  });
+
+  it("normalizes automation quota safety percent", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+
+    expect(getAppSettings(repos).automation.quotaSafetyPercent).toBe(90);
+
+    updateAppSettings(repos, { automation: { quotaSafetyPercent: 80 } });
+    expect(getAppSettings(repos).automation.quotaSafetyPercent).toBe(80);
+
+    updateAppSettings(repos, { automation: { quotaSafetyPercent: 0 } });
+    expect(getAppSettings(repos).automation.quotaSafetyPercent).toBe(90);
   });
 });

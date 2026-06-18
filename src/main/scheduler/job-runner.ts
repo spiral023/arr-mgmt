@@ -1,6 +1,6 @@
 import type { NotificationAdapter } from "../notifications";
 
-export type JobKind = "analysis" | "search" | "grab" | "combined";
+export type JobKind = "analysis" | "search" | "grab" | "combined" | "automation";
 export type JobStatus = "queued" | "running" | "blocked_by_budget" | "completed" | "failed" | "cancelled";
 
 export type Job = {
