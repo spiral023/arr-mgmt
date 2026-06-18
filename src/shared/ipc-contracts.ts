@@ -233,7 +233,7 @@ export type AppSettings = {
     candidatesFound: boolean;
   };
   quota: { searchLimit: number; grabLimit: number; windowHours: number };
-  tray: { keepRunningOnClose: boolean; showControls: boolean };
+  tray: { keepRunningOnClose: boolean; openAtLogin: boolean; showControls: boolean };
 };
 
 export type AppSettingsInput = Partial<{

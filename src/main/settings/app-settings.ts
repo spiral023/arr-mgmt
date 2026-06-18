@@ -14,7 +14,7 @@ export const defaultAppSettings: AppSettings = {
     candidatesFound: true,
   },
   quota: { searchLimit: 10000, grabLimit: 400, windowHours: 24 },
-  tray: { keepRunningOnClose: true, showControls: true },
+  tray: { keepRunningOnClose: true, openAtLogin: false, showControls: true },
 };
 
 export function getAppSettings(repos: Repositories): AppSettings {
@@ -59,6 +59,7 @@ function normalizeSettings(input: AppSettingsInput): AppSettings {
     },
     tray: {
       keepRunningOnClose: booleanValue(input.tray?.keepRunningOnClose, defaultAppSettings.tray.keepRunningOnClose),
+      openAtLogin: booleanValue(input.tray?.openAtLogin, defaultAppSettings.tray.openAtLogin),
       showControls: booleanValue(input.tray?.showControls, defaultAppSettings.tray.showControls),
     },
   };

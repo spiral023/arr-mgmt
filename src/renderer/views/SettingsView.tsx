@@ -1,4 +1,4 @@
-import { Bell, Clock3, Database, KeyRound, Save, Shield, Timer, Trash2, Wifi } from "lucide-react";
+import { Bell, Clock3, Database, KeyRound, Power, Save, Shield, Timer, Trash2, Wifi } from "lucide-react";
 import type { ChangeEvent } from "react";
 import { useEffect, useState } from "react";
 import { IconButton } from "../components/IconButton";
@@ -22,6 +22,7 @@ export function SettingsView() {
   const [keepRunningOnClose, setKeepRunningOnClose] = useState(true);
   const [movieCooldown, setMovieCooldown] = useState(24);
   const [message, setMessage] = useState("Ready");
+  const [openAtLogin, setOpenAtLogin] = useState(false);
   const [quotaExhaustedNotifications, setQuotaExhaustedNotifications] = useState(true);
   const [searchLimit, setSearchLimit] = useState(10000);
   const [showTrayControls, setShowTrayControls] = useState(true);
@@ -46,6 +47,7 @@ export function SettingsView() {
       setJobFinishedNotifications(settings.appSettings.notifications.jobFinished);
       setKeepRunningOnClose(settings.appSettings.tray.keepRunningOnClose);
       setMovieCooldown(settings.appSettings.cooldownHours.movieSearch);
+      setOpenAtLogin(settings.appSettings.tray.openAtLogin);
       setQuotaExhaustedNotifications(settings.appSettings.notifications.quotaExhausted);
       setSearchLimit(settings.appSettings.quota.searchLimit);
       setShowTrayControls(settings.appSettings.tray.showControls);
@@ -82,12 +84,13 @@ export function SettingsView() {
           quotaExhausted: quotaExhaustedNotifications,
         },
         quota: { grabLimit, searchLimit, windowHours: 24 },
-        tray: { keepRunningOnClose, showControls: showTrayControls },
+        tray: { keepRunningOnClose, openAtLogin, showControls: showTrayControls },
       });
       setEpisodeCooldown(saved.cooldownHours.episodeSearch);
       setMovieCooldown(saved.cooldownHours.movieSearch);
       setFunPrefixes(saved.fun.prefixes.join(", "));
       setGrabLimit(saved.quota.grabLimit);
+      setOpenAtLogin(saved.tray.openAtLogin);
       setSearchLimit(saved.quota.searchLimit);
       setMessage("General settings saved");
     } catch (error) {
@@ -305,6 +308,7 @@ export function SettingsView() {
           <Check checked={jobFinishedNotifications} label="Show Windows notifications when jobs finish" onChange={setJobFinishedNotifications} />
           <Check checked={quotaExhaustedNotifications} label="Notify when quota is exhausted" onChange={setQuotaExhaustedNotifications} />
           <Check checked={candidatesFoundNotifications} label="Notify when FuN* candidates are found" onChange={setCandidatesFoundNotifications} />
+          <Check checked={openAtLogin} icon={Power} label="Start app with Windows" onChange={setOpenAtLogin} />
           <Check checked={keepRunningOnClose} label="Keep app running when the window is closed" onChange={setKeepRunningOnClose} />
           <Check checked={showTrayControls} label="Show tray controls for analysis and scheduler pause" onChange={setShowTrayControls} />
         </div>
@@ -415,7 +419,7 @@ function Label({ children }: { children: string }) {
   return <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-ink-400">{children}</span>;
 }
 
-function Check({ checked, label, onChange }: { checked?: boolean; label: string; onChange?: (checked: boolean) => void }) {
+function Check({ checked, icon: Icon, label, onChange }: { checked?: boolean; icon?: typeof Power; label: string; onChange?: (checked: boolean) => void }) {
   const checkboxProps =
     typeof checked === "boolean" && onChange
       ? { checked, onChange: (event: ChangeEvent<HTMLInputElement>) => onChange(event.target.checked) }
@@ -423,6 +427,7 @@ function Check({ checked, label, onChange }: { checked?: boolean; label: string;
   return (
     <label className="inline-flex min-h-10 items-center gap-2 rounded-md border border-white/10 bg-ink-950/70 px-3 shadow-surface">
       <input className="h-4 w-4 rounded border-white/20 bg-ink-950 accent-signal-cyan" type="checkbox" {...checkboxProps} />
+      {Icon ? <Icon aria-hidden="true" className="h-4 w-4 text-ink-400" /> : null}
       <span>{label}</span>
     </label>
   );

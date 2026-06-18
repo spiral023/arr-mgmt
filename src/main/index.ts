@@ -10,6 +10,8 @@ import { createNotificationAdapter } from "./notifications";
 import { JobRunner } from "./scheduler/job-runner";
 import { Scheduler } from "./scheduler/scheduler";
 import { createSecretStore } from "./secrets/secret-store";
+import { getAppSettings } from "./settings/app-settings";
+import { applyLoginStartupSetting } from "./settings/login-startup";
 import { createTray } from "./tray";
 
 export let isQuitting = false;
@@ -30,7 +32,9 @@ app.whenReady().then(() => {
     createSecretStore(safeStorage),
   );
 
-  const ipcState = { instanceStore, jobRunner, repositories, scheduler };
+  applyLoginStartupSetting(getAppSettings(repositories), app);
+
+  const ipcState = { instanceStore, jobRunner, loginStartup: app, repositories, scheduler };
   registerIpcHandlers(ipcState);
   registerPersistedSchedules(ipcState);
   createTray(window, {

@@ -8,10 +8,15 @@ export type ArrQualityProfile = {
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+export type ArrRequestRateLimiter = {
+  waitForSlot: () => Promise<void>;
+};
+
 export type ArrClientConfig = {
   baseUrl: string;
   apiKey: string;
   fetchImpl?: FetchLike;
+  rateLimiter?: ArrRequestRateLimiter;
 };
 
 export type ArrStatus = {

@@ -15,6 +15,7 @@ import type { JobContext, JobRunner } from "./scheduler/job-runner";
 import { QuotaService } from "./scheduler/quota-service";
 import type { Scheduler } from "./scheduler/scheduler";
 import { getAppSettings, updateAppSettings } from "./settings/app-settings";
+import { applyLoginStartupSetting, type LoginStartupAdapter } from "./settings/login-startup";
 import { calculateNextRunAt } from "../shared/schedule";
 import type {
   ActivityRowView,
@@ -43,6 +44,7 @@ import type {
 export type IpcState = {
   instanceStore: InstanceStore;
   jobRunner: JobRunner;
+  loginStartup?: LoginStartupAdapter;
   repositories: ReturnType<typeof createRepositories>;
   scheduler: Scheduler;
 };
@@ -251,7 +253,13 @@ export function registerIpcHandlers(state: IpcState): void {
     state.repositories.settings.set("onboarding.completed", true);
     return { ok: true };
   });
-  ipcMain.handle("settings:update", (_event, payload: unknown) => updateAppSettings(state.repositories, assertSettingsInput(payload)));
+  ipcMain.handle("settings:update", (_event, payload: unknown) => {
+    const saved = updateAppSettings(state.repositories, assertSettingsInput(payload));
+    if (state.loginStartup) {
+      applyLoginStartupSetting(saved, state.loginStartup);
+    }
+    return saved;
+  });
   ipcMain.handle("schedules:list", (): ScheduleView[] => state.repositories.schedules.list());
   ipcMain.handle("schedules:save", (_event, payload: unknown): ScheduleView => {
     const schedule = state.repositories.schedules.upsert({ ...assertScheduleInput(payload), now: new Date() });

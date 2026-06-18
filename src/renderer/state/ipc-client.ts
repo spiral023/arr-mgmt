@@ -200,7 +200,7 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
         fun: { displayName: "FuN*", prefixes: ["fun"] },
         notifications: { candidatesFound: true, jobFinished: true, quotaExhausted: true },
         quota: { searchLimit: 10000, grabLimit: 400, windowHours: 24 },
-        tray: { keepRunningOnClose: true, showControls: true },
+        tray: { keepRunningOnClose: true, openAtLogin: false, showControls: true },
       },
       instances: [
         { kind: "sonarr", name: "Sonarr", baseUrl: "http://192.168.0.170:8989", enabled: true, hasApiKey: false },

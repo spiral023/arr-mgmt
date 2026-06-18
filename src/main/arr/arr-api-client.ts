@@ -1,16 +1,49 @@
-import type { ArrClientConfig, FetchLike } from "./arr-types";
+import type { ArrClientConfig, ArrRequestRateLimiter, FetchLike } from "./arr-types";
 
 type QueryValue = string | number | boolean;
+
+export class ArrRateLimiter implements ArrRequestRateLimiter {
+  private starts: number[] = [];
+  private queue: Promise<void> = Promise.resolve();
+
+  constructor(private readonly options: { maxRequests: number; windowMs: number }) {}
+
+  async waitForSlot(): Promise<void> {
+    const pending = this.queue.then(() => this.takeSlot());
+    this.queue = pending.catch(() => undefined);
+    await pending;
+  }
+
+  private async takeSlot(): Promise<void> {
+    while (true) {
+      const now = Date.now();
+      this.starts = this.starts.filter((startedAt) => now - startedAt < this.options.windowMs);
+
+      if (this.starts.length < this.options.maxRequests) {
+        this.starts.push(now);
+        return;
+      }
+
+      const oldest = this.starts[0];
+      const waitMs = Math.max(1, this.options.windowMs - (now - oldest));
+      await delay(waitMs);
+    }
+  }
+}
+
+const sharedArrRateLimiter = new ArrRateLimiter({ maxRequests: 5, windowMs: 1000 });
 
 export class ArrApiClient {
   private readonly apiBaseUrl: string;
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
+  private readonly rateLimiter: ArrRequestRateLimiter;
 
   constructor(config: ArrClientConfig) {
     this.apiBaseUrl = normalizeApiBaseUrl(config.baseUrl);
     this.apiKey = config.apiKey;
     this.fetchImpl = config.fetchImpl ?? fetch;
+    this.rateLimiter = config.rateLimiter ?? sharedArrRateLimiter;
   }
 
   protected get<T>(path: string, query?: Record<string, QueryValue>): Promise<T> {
@@ -43,6 +76,7 @@ export class ArrApiClient {
       };
     }
 
+    await this.rateLimiter.waitForSlot();
     const response = await this.fetchImpl(url, init);
 
     if (!response.ok) {
@@ -81,4 +115,10 @@ function normalizeApiBaseUrl(baseUrl: string): string {
 
 function normalizePath(path: string): string {
   return path.startsWith("/") ? path : `/${path}`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

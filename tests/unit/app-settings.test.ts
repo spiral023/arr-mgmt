@@ -18,8 +18,8 @@ describe("app settings", () => {
         quotaExhausted: true,
         candidatesFound: true,
       },
-      quota: { searchLimit: 2000, grabLimit: 400, windowHours: 24 },
-      tray: { keepRunningOnClose: true, showControls: true },
+      quota: { searchLimit: 10000, grabLimit: 400, windowHours: 24 },
+      tray: { keepRunningOnClose: true, openAtLogin: false, showControls: true },
     });
   });
 
@@ -31,10 +31,12 @@ describe("app settings", () => {
     const updated = updateAppSettings(repos, {
       fun: { prefixes: [" FuN ", "", "funhd"] },
       quota: { searchLimit: 25, grabLimit: -1 },
+      tray: { openAtLogin: true },
     });
 
     expect(updated.fun.prefixes).toEqual(["fun", "funhd"]);
     expect(updated.quota).toEqual({ searchLimit: 25, grabLimit: 400, windowHours: 24 });
+    expect(updated.tray).toEqual({ keepRunningOnClose: true, openAtLogin: true, showControls: true });
     expect(getAppSettings(repos)).toEqual(updated);
   });
 });

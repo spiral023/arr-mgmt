@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ArrRateLimiter } from "../../src/main/arr/arr-api-client";
 import type { FetchLike } from "../../src/main/arr/arr-types";
 import { RadarrClient } from "../../src/main/arr/radarr-client";
 import { SonarrClient } from "../../src/main/arr/sonarr-client";
@@ -10,13 +11,65 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function testRateLimiter(): ArrRateLimiter {
+  return new ArrRateLimiter({ maxRequests: 100, windowMs: 1000 });
+}
+
 describe("ARR API clients", () => {
+  it("limits ARR API request starts to five per second across clients", async () => {
+    vi.useFakeTimers();
+    try {
+      const starts: number[] = [];
+      const fetchImpl = vi.fn<FetchLike>(async () => {
+        starts.push(Date.now());
+        return jsonResponse({ ok: true });
+      });
+      const rateLimiter = new ArrRateLimiter({ maxRequests: 5, windowMs: 1000 });
+      const sonarr = new SonarrClient({
+        baseUrl: "http://sonarr.local:8989",
+        apiKey: "sonarr-key",
+        fetchImpl,
+        rateLimiter
+      });
+      const radarr = new RadarrClient({
+        baseUrl: "http://radarr.local:7878",
+        apiKey: "radarr-key",
+        fetchImpl,
+        rateLimiter
+      });
+
+      const requests = [
+        sonarr.getStatus(),
+        sonarr.getSeries(),
+        sonarr.getQualityProfiles(),
+        radarr.getStatus(),
+        radarr.getMovies(),
+        radarr.getQualityProfiles()
+      ];
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchImpl).toHaveBeenCalledTimes(5);
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(fetchImpl).toHaveBeenCalledTimes(5);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.all(requests);
+
+      expect(fetchImpl).toHaveBeenCalledTimes(6);
+      expect(starts[5] - starts[0]).toBeGreaterThanOrEqual(1000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("normalizes Sonarr URLs and sends the API key header", async () => {
     const fetchImpl = vi.fn<FetchLike>(async () => jsonResponse({ version: "4.0.17.2952" }));
     const client = new SonarrClient({
       baseUrl: "http://sonarr.local:8989/",
       apiKey: "sonarr-key",
-      fetchImpl
+      fetchImpl,
+      rateLimiter: testRateLimiter()
     });
 
     await client.getStatus();
@@ -37,7 +90,8 @@ describe("ARR API clients", () => {
     const client = new SonarrClient({
       baseUrl: "http://sonarr.local:8989",
       apiKey: "sonarr-key",
-      fetchImpl
+      fetchImpl,
+      rateLimiter: testRateLimiter()
     });
 
     await client.getSeries();
@@ -68,7 +122,8 @@ describe("ARR API clients", () => {
     const client = new RadarrClient({
       baseUrl: "http://radarr.local:7878/",
       apiKey: "radarr-key",
-      fetchImpl
+      fetchImpl,
+      rateLimiter: testRateLimiter()
     });
 
     await client.getStatus();
@@ -98,7 +153,8 @@ describe("ARR API clients", () => {
     const client = new SonarrClient({
       baseUrl: "http://sonarr.local:8989",
       apiKey: "bad-key",
-      fetchImpl
+      fetchImpl,
+      rateLimiter: testRateLimiter()
     });
 
     await expect(client.getStatus()).rejects.toThrow("ARR request failed: GET /system/status returned 401");
