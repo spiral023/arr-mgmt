@@ -1804,6 +1804,13 @@ function deriveAutomationGoalStatus(
     return "blocked_by_error";
   }
 
+  if (row.nextEligibleRunAt) {
+    const nextEligibleTime = new Date(row.nextEligibleRunAt).getTime();
+    if (Number.isFinite(nextEligibleTime) && nextEligibleTime > Date.now()) {
+      return "waiting_for_quota";
+    }
+  }
+
   if (metrics.matchingFiles > 0 && metrics.currentFunShare >= row.targetFunShare) {
     return "target_reached";
   }

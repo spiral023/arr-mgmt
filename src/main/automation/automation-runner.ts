@@ -78,7 +78,13 @@ export class AutomationRunner {
       },
     });
 
-    await this.jobRunner.waitFor(job.id);
+    try {
+      await this.jobRunner.waitFor(job.id);
+    } catch (error) {
+      if (!finalRun) {
+        throw error;
+      }
+    }
 
     if (!finalRun) {
       throw new Error(`Automation run for goal ${goal.id} did not start`);
@@ -91,7 +97,7 @@ export class AutomationRunner {
     const goals = this.repositories.automationGoals
       .list()
       .filter((goal) => goal.enabled && goal.manualStatus === "active")
-      .filter((goal) => goal.nextEligibleRunAt == null || new Date(goal.nextEligibleRunAt).getTime() <= now.getTime())
+      .filter((goal) => isDue(goal.nextEligibleRunAt, now))
       .filter((goal) => trigger !== "startup" || goal.runOnStartup);
     const runs: AutomationRunView[] = [];
 
@@ -112,50 +118,54 @@ export class AutomationRunner {
     });
     this.insertEvent(goalId, run.id, "info", "Run started", startedAt);
 
-    const activeItems = this.reconcileGoal(goalId);
-    const actionableItems = activeItems.filter((item) => item.status !== "satisfied");
-    run = this.repositories.automationRuns.updateProgress(run.id, {
-      progressCurrent: 0,
-      progressTotal: actionableItems.length,
-    }) ?? run;
-    context?.setProgressTotal(actionableItems.length);
-    this.insertEvent(
-      goalId,
-      run.id,
-      "info",
-      `Reconciled ${activeItems.length} active work items; ${actionableItems.length} require action`,
-      this.now(),
-    );
-
-    const reconciledGoal = this.requireGoal(goalId);
-    if (reconciledGoal.matchingFiles > 0 && reconciledGoal.currentFunShare >= reconciledGoal.targetFunShare) {
-      this.insertEvent(goalId, run.id, "info", "Target FuN share reached; no automation work needed", this.now());
-      return this.finishRun(run, "target_reached", 0, actionableItems.length);
-    }
-
-    const quotaStop = this.getQuotaSafetyStop(reconciledGoal);
-    if (quotaStop) {
-      const eligibleAt = nextQuotaEligibleAt(this.now(), 24);
-      this.repositories.automationGoals.markRunResult(goalId, {
-        lastRunAt: this.now(),
-        nextEligibleRunAt: eligibleAt,
-        lastError: null,
-      });
+    try {
+      const activeItems = this.reconcileGoal(goalId);
+      const actionableItems = activeItems.filter((item) => item.status !== "satisfied");
+      run = this.repositories.automationRuns.updateProgress(run.id, {
+        progressCurrent: 0,
+        progressTotal: actionableItems.length,
+      }) ?? run;
+      context?.setProgressTotal(actionableItems.length);
       this.insertEvent(
         goalId,
         run.id,
-        "warning",
-        `Quota safety reached for ${quotaStop}; next eligible at ${eligibleAt.toISOString()}`,
+        "info",
+        `Reconciled ${activeItems.length} active work items; ${actionableItems.length} require action`,
         this.now(),
       );
-      return this.finishRun(run, "waiting_for_quota", 0, actionableItems.length);
-    }
 
-    const result = await this.executor({ goal: reconciledGoal, run, workItems: actionableItems, context });
-    const completed = result?.completed ?? 0;
-    context?.setProgress(completed, actionableItems.length);
-    this.insertEvent(goalId, run.id, "info", "Runner skeleton completed; execution adapter not installed", this.now());
-    return this.finishRun(run, "completed", completed, actionableItems.length);
+      const reconciledGoal = this.requireGoal(goalId);
+      if (reconciledGoal.matchingFiles > 0 && reconciledGoal.currentFunShare >= reconciledGoal.targetFunShare) {
+        this.insertEvent(goalId, run.id, "info", "Target FuN share reached; no automation work needed", this.now());
+        return this.finishRun(run, "target_reached", 0, actionableItems.length);
+      }
+
+      const quotaStop = this.getQuotaSafetyStop(reconciledGoal);
+      if (quotaStop) {
+        const eligibleAt = nextQuotaEligibleAt(this.now(), 24);
+        this.repositories.automationGoals.markRunResult(goalId, {
+          lastRunAt: this.now(),
+          nextEligibleRunAt: eligibleAt,
+          lastError: null,
+        });
+        this.insertEvent(
+          goalId,
+          run.id,
+          "warning",
+          `Quota safety reached for ${quotaStop}; next eligible at ${eligibleAt.toISOString()}`,
+          this.now(),
+        );
+        return this.finishRun(run, "waiting_for_quota", 0, actionableItems.length);
+      }
+
+      const result = await this.executor({ goal: reconciledGoal, run, workItems: actionableItems, context });
+      const completed = result?.completed ?? 0;
+      context?.setProgress(completed, actionableItems.length);
+      this.insertEvent(goalId, run.id, "info", "Runner skeleton completed; execution adapter not installed", this.now());
+      return this.finishRun(run, "completed", completed, actionableItems.length);
+    } catch (error) {
+      return this.failRun(run, error);
+    }
   }
 
   private finishRun(
@@ -176,6 +186,25 @@ export class AutomationRunner {
         finishedAt,
         progressCurrent,
         progressTotal,
+      }) ?? run
+    );
+  }
+
+  private failRun(run: AutomationRunView, error: unknown): AutomationRunView {
+    const message = error instanceof Error ? error.message : String(error);
+    const finishedAt = this.now();
+    this.repositories.automationGoals.markRunResult(run.goalId, {
+      lastRunAt: finishedAt,
+      nextEligibleRunAt: null,
+      lastError: message,
+    });
+    this.insertEvent(run.goalId, run.id, "error", message, finishedAt);
+    return (
+      this.repositories.automationRuns.finish(run.id, {
+        status: "blocked_by_error",
+        finishedAt,
+        progressCurrent: run.progressCurrent,
+        progressTotal: run.progressTotal,
       }) ?? run
     );
   }
@@ -285,6 +314,12 @@ function statusForFile(file: AutomationMediaFile): AutomationWorkItemStatus {
 function targetForScope(scope: AutomationScope): Job["target"] {
   if (scope === "both") return "all";
   return scope;
+}
+
+function isDue(nextEligibleRunAt: string | undefined, now: Date): boolean {
+  if (nextEligibleRunAt == null) return true;
+  const eligibleAt = new Date(nextEligibleRunAt).getTime();
+  return !Number.isFinite(eligibleAt) || eligibleAt <= now.getTime();
 }
 
 function workItemKey(item: Pick<AutomationMediaFile | AutomationWorkItemView, "instanceId" | "kind" | "childArrId">): string {

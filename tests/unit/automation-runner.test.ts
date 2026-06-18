@@ -105,6 +105,7 @@ describe("AutomationRunner", () => {
     expect(run.status).toBe("waiting_for_quota");
     expect(run.progressTotal).toBe(1);
     expect(repos.automationGoals.find(goal.id)?.nextEligibleRunAt).toBe("2026-06-19T12:00:00.000Z");
+    expect(repos.automationGoals.find(goal.id)?.status).toBe("waiting_for_quota");
     expect(repos.automationEvents.list(goal.id, 10)[0]).toEqual(
       expect.objectContaining({ level: "warning", message: "Quota safety reached for search; next eligible at 2026-06-19T12:00:00.000Z" }),
     );
@@ -120,41 +121,91 @@ describe("AutomationRunner", () => {
     }
     const grabRun = await createRunner(grabFixture.repos, { getSettings: () => settings }).runGoal(grabFixture.goal.id);
     expect(grabRun.status).toBe("waiting_for_quota");
+    expect(grabFixture.repos.automationGoals.find(grabFixture.goal.id)?.status).toBe("waiting_for_quota");
     expect(grabFixture.repos.automationEvents.list(grabFixture.goal.id, 10)[0]).toEqual(
       expect.objectContaining({ level: "warning", message: "Quota safety reached for grab; next eligible at 2026-06-19T12:00:00.000Z" }),
     );
   });
 
+  it("runGoal finalizes the automation run and goal when the executor rejects", async () => {
+    const { goal, repos } = createFixture();
+    const runner = createRunner(repos, {
+      executor: async () => {
+        throw new Error("adapter failed");
+      },
+    });
+
+    const run = await runner.runGoal(goal.id);
+
+    expect(run).toEqual(expect.objectContaining({ status: "blocked_by_error", progressCurrent: 0, progressTotal: 1 }));
+    expect(repos.automationRuns.listForGoal(goal.id)).toEqual([
+      expect.objectContaining({ id: run.id, status: "blocked_by_error", finishedAt: "2026-06-18T12:00:00.000Z" }),
+    ]);
+    expect(repos.automationGoals.find(goal.id)).toEqual(
+      expect.objectContaining({ lastError: "adapter failed", status: "blocked_by_error" }),
+    );
+    expect(repos.automationEvents.list(goal.id, 10)[0]).toEqual(
+      expect.objectContaining({ level: "error", message: "adapter failed" }),
+    );
+  });
+
   it("runEligible startup runs only enabled active startup goals whose nextEligibleRunAt is due", async () => {
-    const { repos } = createFixture();
+    const { db, repos } = createFixture();
     const dueStartupGoal = repos.automationGoals.upsert(goalInput({ name: "Due startup", runOnStartup: true }));
     const disabledGoal = repos.automationGoals.upsert(goalInput({ name: "Disabled", enabled: false, runOnStartup: true }));
     const scheduledOnlyGoal = repos.automationGoals.upsert(goalInput({ name: "Scheduled only", runOnStartup: false }));
     const futureGoal = repos.automationGoals.upsert(goalInput({ name: "Future startup", runOnStartup: true }));
     const pausedGoal = repos.automationGoals.upsert(goalInput({ name: "Paused startup", runOnStartup: true }));
+    const invalidDateGoal = repos.automationGoals.upsert(goalInput({ name: "Invalid date startup", runOnStartup: true }));
     repos.automationGoals.markRunResult(futureGoal.id, {
       lastRunAt: now,
       nextEligibleRunAt: new Date("2026-06-19T12:00:00.000Z"),
     });
     repos.automationGoals.setManualStatus(pausedGoal.id, "paused_by_user", now);
+    db.prepare("update automation_goals set next_eligible_run_at = ? where id = ?").run("not-a-date", invalidDateGoal.id);
     const jobRunner = new FakeJobRunner();
     const runner = createRunner(repos, { jobRunner });
 
     const runs = await runner.runEligible("startup");
 
-    expect(runs.map((run) => run.goalId)).toEqual([1, dueStartupGoal.id]);
-    expect(jobRunner.tasks.map((task) => task.name)).toEqual(["Automation: Goal", "Automation: Due startup"]);
+    expect(runs.map((run) => run.goalId)).toEqual([1, dueStartupGoal.id, invalidDateGoal.id]);
+    expect(jobRunner.tasks.map((task) => task.name)).toEqual([
+      "Automation: Goal",
+      "Automation: Due startup",
+      "Automation: Invalid date startup",
+    ]);
     expect(repos.automationRuns.listForGoal(disabledGoal.id)).toEqual([]);
     expect(repos.automationRuns.listForGoal(scheduledOnlyGoal.id)).toEqual([]);
     expect(repos.automationRuns.listForGoal(futureGoal.id)).toEqual([]);
     expect(repos.automationRuns.listForGoal(pausedGoal.id)).toEqual([]);
+  });
+
+  it("test fake waits only for the requested job id", async () => {
+    const jobRunner = new FakeJobRunner();
+    let releaseFirstJob: () => void = () => undefined;
+    jobRunner.enqueue({
+      kind: "automation",
+      name: "Slow automation",
+      run: () =>
+        new Promise<void>((resolve) => {
+          releaseFirstJob = resolve;
+        }),
+    });
+    const fastJob = jobRunner.enqueue({ kind: "automation", name: "Fast automation", run: async () => undefined });
+
+    await expect(Promise.race([jobRunner.waitFor(fastJob.id).then(() => "fast"), delay(10).then(() => "timeout")])).resolves.toBe(
+      "fast",
+    );
+
+    releaseFirstJob();
+    await jobRunner.waitFor("job-1");
   });
 });
 
 class FakeJobRunner {
   readonly contexts: Array<JobContext & { setProgressTotal: ReturnType<typeof vi.fn>; setProgress: ReturnType<typeof vi.fn> }> = [];
   readonly tasks: JobTask[] = [];
-  private readonly running: Array<Promise<void>> = [];
+  private readonly running = new Map<string, Promise<void>>();
 
   enqueue(task: JobTask) {
     const id = `job-${this.tasks.length + 1}`;
@@ -172,7 +223,7 @@ class FakeJobRunner {
       throwIfCancelled: vi.fn(),
     };
     this.contexts.push(context);
-    this.running.push(Promise.resolve(task.run?.(context)).then(() => undefined));
+    this.running.set(id, Promise.resolve(task.run?.(context)).then(() => undefined));
     return {
       id,
       name: task.name,
@@ -187,9 +238,13 @@ class FakeJobRunner {
     };
   }
 
-  async waitFor(): Promise<void> {
-    await Promise.all(this.running);
+  async waitFor(jobId: string): Promise<void> {
+    await this.running.get(jobId);
   }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function createRunner(
