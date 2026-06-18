@@ -218,7 +218,7 @@ export function createRepositories(db: AppDatabase) {
           .prepare(
             `select arr_id as arrId
              from media_items
-             where instance_id = ? and kind = ? and last_analyzed_at is not null and quality_profile_name is not null
+             where instance_id = ? and kind = ? and last_analyzed_at is not null
              order by arr_id asc`,
           )
           .all(instanceId, kind) as Array<{ arrId: number }>;

@@ -21,7 +21,7 @@ describe("RadarrMoviesView", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Example Movie" }));
 
-    expect(screen.getByText("1 selected - 2 pending FuN* files")).toBeInTheDocument();
+    expect(screen.getByText("1 selected · 2 pending FuN* files")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Search selected Radarr movies" }));
     fireEvent.click(screen.getByRole("button", { name: "Grab selected pending Radarr FuN releases" }));
