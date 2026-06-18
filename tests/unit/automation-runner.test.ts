@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MediaItemAnalysis } from "../../src/main/arr/arr-types";
 import { AutomationRunner } from "../../src/main/automation/automation-runner";
 import { defaultAppSettings } from "../../src/main/settings/app-settings";
@@ -30,6 +30,15 @@ type GoalInputOverrides = Partial<{
 }>;
 
 describe("AutomationRunner", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("reconcileGoal creates file-level work items and marks FuN files satisfied and non-FuN files pending", () => {
     const { goal, repos } = createFixture();
     const runner = createRunner(repos);
