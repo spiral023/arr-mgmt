@@ -26,5 +26,21 @@ function compareOldestSearchFirst(a: AutomationWorkItemForOrdering, b: Automatio
 }
 
 function compareAlphabetical(a: AutomationWorkItemForOrdering, b: AutomationWorkItemForOrdering): number {
-  return a.sortKey.localeCompare(b.sortKey) || a.title.localeCompare(b.title);
+  return a.sortKey.localeCompare(b.sortKey) || a.title.localeCompare(b.title) || compareIdentity(a, b);
+}
+
+function compareIdentity(a: AutomationWorkItemForOrdering, b: AutomationWorkItemForOrdering): number {
+  return (
+    a.instanceId - b.instanceId ||
+    a.kind.localeCompare(b.kind) ||
+    a.childArrId - b.childArrId ||
+    compareNullableNumber(a.mediaFileId, b.mediaFileId)
+  );
+}
+
+function compareNullableNumber(a: number | null, b: number | null): number {
+  if (a != null && b != null) return a - b;
+  if (a != null) return -1;
+  if (b != null) return 1;
+  return 0;
 }

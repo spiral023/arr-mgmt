@@ -37,10 +37,32 @@ describe("orderAutomationWorkItems", () => {
     ]);
     expect(orderAutomationWorkItems(items, "alphabetical").map((item) => item.title)).toEqual(["Alpha", "Beta", "Zulu"]);
   });
+
+  it("uses stable identity fields to order duplicate sort keys and titles deterministically", () => {
+    const items = [
+      workItem({ instanceId: 2, kind: "episode", childArrId: 10, mediaFileId: 5 }),
+      workItem({ instanceId: 1, kind: "movie", childArrId: 10, mediaFileId: 5 }),
+      workItem({ instanceId: 1, kind: "episode", childArrId: 11, mediaFileId: null }),
+      workItem({ instanceId: 1, kind: "episode", childArrId: 10, mediaFileId: 6 }),
+      workItem({ instanceId: 1, kind: "episode", childArrId: 10, mediaFileId: 5 }),
+    ];
+
+    expect(orderAutomationWorkItems(items, "alphabetical").map(identity)).toEqual([
+      "1:episode:10:5",
+      "1:episode:10:6",
+      "1:episode:11:null",
+      "1:movie:10:5",
+      "2:episode:10:5",
+    ]);
+  });
 });
 
 function workItem(overrides: Partial<AutomationWorkItemForOrdering> = {}): AutomationWorkItemForOrdering {
   return {
+    instanceId: 1,
+    kind: "episode",
+    childArrId: 1,
+    mediaFileId: 1,
     title: "Example",
     sortKey: "example",
     itemFunShare: 0.5,
@@ -48,4 +70,8 @@ function workItem(overrides: Partial<AutomationWorkItemForOrdering> = {}): Autom
     lastSearchedAt: null,
     ...overrides,
   };
+}
+
+function identity(item: AutomationWorkItemForOrdering): string {
+  return `${item.instanceId}:${item.kind}:${item.childArrId}:${item.mediaFileId}`;
 }

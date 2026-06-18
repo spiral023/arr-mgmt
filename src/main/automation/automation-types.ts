@@ -49,6 +49,10 @@ export type DesiredAutomationWorkItem = {
 };
 
 export type AutomationWorkItemForOrdering = {
+  instanceId: number;
+  kind: AutomationWorkItemView["kind"];
+  childArrId: number;
+  mediaFileId: number | null;
   title: string;
   sortKey: string;
   itemFunShare: number;

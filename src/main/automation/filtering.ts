@@ -45,10 +45,14 @@ function matchesFunShare(value: number, filter: AutomationGoalFilters["funShare"
 
 function matchesRecency(timestamp: string | null, filter: AutomationRecencyFilter, now: Date): boolean {
   if (filter.mode === "any") return true;
-  if (timestamp == null) return filter.mode === "never";
+
+  const timestampTime = timestamp == null ? Number.NaN : new Date(timestamp).getTime();
+  if (!Number.isFinite(timestampTime)) {
+    return filter.mode === "never" || filter.mode === "older_than";
+  }
+
   if (filter.mode === "never") return false;
 
-  const timestampTime = new Date(timestamp).getTime();
   const cutoffTime = now.getTime() - filter.days * millisecondsPerDay;
 
   if (filter.mode === "older_than") return timestampTime < cutoffTime;

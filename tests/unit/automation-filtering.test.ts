@@ -76,6 +76,54 @@ describe("matchesAutomationFilters", () => {
       ),
     ).toBe(true);
   });
+
+  it("treats missing timestamps as eligible for older-than recency filters", () => {
+    const olderThanFilters = {
+      monitored: "either",
+      hasFile: "either",
+      qualityProfiles: [],
+      funShare: null,
+      analyzed: { mode: "older_than", days: 7 },
+      searched: { mode: "older_than", days: 7 },
+      grabbed: { mode: "older_than", days: 7 },
+    } satisfies AutomationGoalFilters;
+
+    expect(
+      matchesAutomationFilters(
+        mediaFile({
+          lastAnalyzedAt: null,
+          lastSearchedAt: null,
+          lastGrabbedAt: null,
+        }),
+        olderThanFilters,
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it("treats invalid timestamps like missing timestamps for recency filters", () => {
+    expect(
+      matchesAutomationFilters(
+        mediaFile({ lastSearchedAt: "not-a-date" }),
+        { ...filters, searched: { mode: "never" } },
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      matchesAutomationFilters(
+        mediaFile({ lastSearchedAt: "not-a-date" }),
+        { ...filters, searched: { mode: "older_than", days: 7 } },
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      matchesAutomationFilters(
+        mediaFile({ lastSearchedAt: "not-a-date" }),
+        { ...filters, searched: { mode: "within_last", days: 7 } },
+        now,
+      ),
+    ).toBe(false);
+  });
 });
 
 function mediaFile(overrides: Partial<AutomationMediaFile> = {}): AutomationMediaFile {
