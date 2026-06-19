@@ -242,6 +242,7 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
   if (channel === "settings:get") {
     return {
       appSettings: {
+        automation: { quotaSafetyPercent: 90 },
         cooldownHours: { episodeSearch: 24, movieSearch: 24 },
         fun: { displayName: "FuN*", prefixes: ["fun"] },
         notifications: { candidatesFound: true, jobFinished: true, quotaExhausted: true },

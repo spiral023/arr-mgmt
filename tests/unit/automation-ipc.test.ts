@@ -1,7 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { IpcState } from "../../src/main/ipc";
 import type { IpcChannel } from "../../src/shared/ipc-contracts";
 
 const handlers = new Map<string, (event: unknown, payload?: unknown) => unknown>();
+type TestState = IpcState & {
+  automationRunner?: unknown;
+  repositories: Record<string, any>;
+  scheduler: {
+    remove: ReturnType<typeof vi.fn>;
+    upsert: ReturnType<typeof vi.fn>;
+  };
+};
 
 vi.mock("electron", () => ({
   ipcMain: {
@@ -76,6 +85,77 @@ describe("automation IPC handlers", () => {
       ),
     ).rejects.toThrow("Invalid automation recency filter");
   });
+
+  it("registers persisted automation schedules and runs startup goals", async () => {
+    const { registerPersistedAutomationGoals } = await import("../../src/main/ipc");
+    const automationRunner = {
+      runEligible: vi.fn(async () => []),
+      runGoal: vi.fn(async () => ({ id: 9, goalId: 7, status: "completed" })),
+    };
+    const scheduledGoal = goalView({
+      id: 7,
+      name: "Scheduled goal",
+      schedule: { enabled: true, intervalKind: "hours", intervalValue: 12, timeOfDay: undefined },
+    });
+    const state = createState({
+      automationRunner,
+      repositories: {
+        ...createState().repositories,
+        automationGoals: {
+          ...createState().repositories.automationGoals,
+          list: vi.fn(() => [scheduledGoal, goalView({ id: 8, schedule: null })]),
+        },
+      },
+    });
+
+    await registerPersistedAutomationGoals(state);
+
+    expect(state.scheduler.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enabled: true,
+        id: "automation:7",
+        name: "Automation: Scheduled goal",
+        rule: { intervalKind: "hours", intervalValue: 12, timeOfDay: undefined },
+      }),
+    );
+    expect(automationRunner.runEligible).toHaveBeenCalledWith("startup");
+
+    const scheduledRun = state.scheduler.upsert.mock.calls[0][0].run;
+    await scheduledRun();
+    expect(automationRunner.runGoal).toHaveBeenCalledWith(7, "schedule");
+  });
+
+  it("updates automation schedule registration when goals are saved, paused, resumed, or deleted", async () => {
+    const { registerIpcHandlers } = await import("../../src/main/ipc");
+    const savedGoal = goalView({
+      id: 7,
+      schedule: { enabled: true, intervalKind: "days", intervalValue: 1, timeOfDay: undefined },
+    });
+    const automationGoals = {
+      delete: vi.fn(),
+      find: vi.fn((id: number) => ({ ...savedGoal, id })),
+      list: vi.fn(() => []),
+      reorder: vi.fn(),
+      setManualStatus: vi.fn(),
+      upsert: vi.fn(() => savedGoal),
+    };
+    const state = createState({
+      repositories: {
+        ...createState().repositories,
+        automationGoals,
+      },
+    });
+    registerIpcHandlers(state);
+
+    await invoke("automation:saveGoal", goalInput({ schedule: savedGoal.schedule }));
+    await invoke("automation:pauseGoal", { goalId: 7 });
+    await invoke("automation:resumeGoal", { goalId: 7 });
+    await invoke("automation:deleteGoal", { goalId: 7 });
+
+    expect(state.scheduler.upsert).toHaveBeenCalledWith(expect.objectContaining({ id: "automation:7" }));
+    expect(state.scheduler.remove).toHaveBeenCalledWith("automation:7");
+    expect(automationGoals.delete).toHaveBeenCalledWith(7);
+  });
 });
 
 const automationChannels: IpcChannel[] = [
@@ -135,9 +215,9 @@ function createState(overrides: Record<string, unknown> = {}) {
       settings: { get: vi.fn(), set: vi.fn() },
       stats: { summary: vi.fn() },
     },
-    scheduler: { remove: vi.fn(), register: vi.fn() },
+    scheduler: { remove: vi.fn(), upsert: vi.fn() },
     ...overrides,
-  } as never;
+  } as unknown as TestState;
 }
 
 function goalInput(overrides: Record<string, unknown> = {}) {
@@ -166,5 +246,20 @@ function defaultFilters() {
     monitored: "yes",
     qualityProfiles: [],
     searched: { mode: "older_than", days: 7 },
+  };
+}
+
+function goalView(overrides: Record<string, unknown> = {}) {
+  return {
+    ...goalInput(),
+    currentFunShare: 0,
+    id: 1,
+    manualStatus: "active",
+    matchingFiles: 0,
+    pendingCandidates: 0,
+    priority: 1,
+    remainingNonFunFiles: 0,
+    status: "enabled",
+    ...overrides,
   };
 }

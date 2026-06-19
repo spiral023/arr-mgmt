@@ -339,10 +339,12 @@ function createRunner(
 function createClients(input: { sonarrReleases?: ArrRelease[]; radarrReleases?: ArrRelease[] } = {}): AutomationArrClients {
   return {
     sonarr: {
+      getStatus: vi.fn(async () => ({ appName: "Sonarr" })),
       getReleasesForEpisode: vi.fn(async () => input.sonarrReleases ?? []),
       grabRelease: vi.fn(async () => undefined),
     },
     radarr: {
+      getStatus: vi.fn(async () => ({ appName: "Radarr" })),
       getReleasesForMovie: vi.fn(async () => input.radarrReleases ?? []),
       grabRelease: vi.fn(async () => undefined),
     },

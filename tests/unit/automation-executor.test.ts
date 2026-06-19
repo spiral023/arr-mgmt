@@ -67,6 +67,29 @@ describe("createAutomationExecutor", () => {
     );
   });
 
+  it("checks the ARR connection before searching and stops without consuming quota when it fails", async () => {
+    const fixture = createFixture({ goal: { actionMode: "search_only" } });
+    const clients = createClients({
+      sonarrReleases: [release({ guid: "fun-102", releaseGroup: "FuN" })],
+    });
+    clients.sonarr.getStatus = vi.fn(async () => {
+      throw new Error("Sonarr unavailable");
+    });
+    const executor = createExecutor(fixture, clients);
+
+    await expect(
+      executor({
+        goal: fixture.goal,
+        run: fixture.run,
+        workItems: [fixture.workItems.sonarr],
+      }),
+    ).rejects.toThrow("Sonarr unavailable");
+
+    expect(clients.sonarr.getStatus).toHaveBeenCalledTimes(1);
+    expect(clients.sonarr.getReleasesForEpisode).not.toHaveBeenCalled();
+    expect(fixture.repos.activityLog.countSince("search", now, 24)).toBe(0);
+  });
+
   it("grab_immediately searches and grabs a FuN release, records both quotas, marks grabbed, and skips re-search before analysis changes", async () => {
     const fixture = createFixture();
     const clients = createClients({
@@ -295,10 +318,12 @@ function createExecutor(fixture: ReturnType<typeof createFixture>, clients: Auto
 function createClients(input: { sonarrReleases?: ArrRelease[]; radarrReleases?: ArrRelease[] } = {}): AutomationArrClients {
   return {
     sonarr: {
+      getStatus: vi.fn(async () => ({ appName: "Sonarr" })),
       getReleasesForEpisode: vi.fn(async () => input.sonarrReleases ?? []),
       grabRelease: vi.fn(async () => undefined),
     },
     radarr: {
+      getStatus: vi.fn(async () => ({ appName: "Radarr" })),
       getReleasesForMovie: vi.fn(async () => input.radarrReleases ?? []),
       grabRelease: vi.fn(async () => undefined),
     },

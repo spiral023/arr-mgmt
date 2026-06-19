@@ -14,6 +14,7 @@ const sectionClassName = "rounded-lg border border-white/10 bg-ink-900/80 p-4 sh
 export function SettingsView() {
   const [instances, setInstances] = useState<InstanceConfigView[]>([]);
   const [candidatesFoundNotifications, setCandidatesFoundNotifications] = useState(true);
+  const [automationSafetyPercent, setAutomationSafetyPercent] = useState(90);
   const [episodeCooldown, setEpisodeCooldown] = useState(24);
   const [funDisplayName, setFunDisplayName] = useState("FuN*");
   const [funPrefixes, setFunPrefixes] = useState("fun");
@@ -39,6 +40,7 @@ export function SettingsView() {
   useEffect(() => {
     void getSettings().then((settings) => {
       setInstances(settings.instances);
+      setAutomationSafetyPercent(settings.appSettings.automation.quotaSafetyPercent);
       setCandidatesFoundNotifications(settings.appSettings.notifications.candidatesFound);
       setEpisodeCooldown(settings.appSettings.cooldownHours.episodeSearch);
       setFunDisplayName(settings.appSettings.fun.displayName);
@@ -83,10 +85,12 @@ export function SettingsView() {
           jobFinished: jobFinishedNotifications,
           quotaExhausted: quotaExhaustedNotifications,
         },
+        automation: { quotaSafetyPercent: automationSafetyPercent },
         quota: { grabLimit, searchLimit, windowHours: 24 },
         tray: { keepRunningOnClose, openAtLogin, showControls: showTrayControls },
       });
       setEpisodeCooldown(saved.cooldownHours.episodeSearch);
+      setAutomationSafetyPercent(saved.automation.quotaSafetyPercent);
       setMovieCooldown(saved.cooldownHours.movieSearch);
       setFunPrefixes(saved.fun.prefixes.join(", "));
       setGrabLimit(saved.quota.grabLimit);
@@ -198,8 +202,8 @@ export function SettingsView() {
         </section>
 
         <section className={sectionClassName}>
-          <Header icon={Timer} title="Shared Rolling 24h Budgets" description="Budgets apply to Sonarr and Radarr together." />
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <Header icon={Timer} title="Shared Rolling 24h Budgets" description="Manual and automation actions count against the same limits." />
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
             <label>
               <Label>Search limit</Label>
               <input className={fieldClassName} min={1} onChange={(event) => setSearchLimit(Number(event.target.value))} type="number" value={searchLimit} />
@@ -208,7 +212,21 @@ export function SettingsView() {
               <Label>Grab limit</Label>
               <input className={fieldClassName} min={1} onChange={(event) => setGrabLimit(Number(event.target.value))} type="number" value={grabLimit} />
             </label>
+            <label>
+              <Label>Automation stop at</Label>
+              <input
+                className={fieldClassName}
+                max={99}
+                min={1}
+                onChange={(event) => setAutomationSafetyPercent(Number(event.target.value))}
+                type="number"
+                value={automationSafetyPercent}
+              />
+            </label>
           </div>
+          <p className="mt-2 text-pretty text-xs text-ink-400">
+            Automation goals stop before crossing this percentage of the shared search/grab budget, then wait for the rolling 24h window.
+          </p>
         </section>
 
         <section className={sectionClassName}>

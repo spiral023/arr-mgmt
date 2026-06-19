@@ -5,7 +5,7 @@ import { createAppDatabase } from "./db/client";
 import { migrateDatabase } from "./db/migrations";
 import { createRepositories } from "./db/repositories";
 import { InstanceStore } from "./instances/instance-store";
-import { registerIpcHandlers, registerPersistedSchedules } from "./ipc";
+import { registerIpcHandlers, registerPersistedAutomationGoals, registerPersistedSchedules } from "./ipc";
 import { createNotificationAdapter } from "./notifications";
 import { JobRunner } from "./scheduler/job-runner";
 import { Scheduler } from "./scheduler/scheduler";
@@ -37,6 +37,9 @@ app.whenReady().then(() => {
   const ipcState = { instanceStore, jobRunner, loginStartup: app, repositories, scheduler };
   registerIpcHandlers(ipcState);
   registerPersistedSchedules(ipcState);
+  void registerPersistedAutomationGoals(ipcState).catch((error) => {
+    console.error("Failed to start persisted automation goals", error);
+  });
   createTray(window, {
     runAnalysis: () => {
       jobRunner.enqueue({ name: "Manual analysis", kind: "analysis", steps: [async () => undefined] });

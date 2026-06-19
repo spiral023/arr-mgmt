@@ -10,11 +10,13 @@ import type { AppSettings, AutomationRunView, AutomationWorkItemView } from "../
 type Repositories = ReturnType<typeof createRepositories>;
 
 export type AutomationSonarrClient = {
+  getStatus?(): Promise<unknown> | unknown;
   getReleasesForEpisode(episodeId: number): Promise<ArrRelease[]> | ArrRelease[];
   grabRelease(release: ArrRelease): Promise<void> | void;
 };
 
 export type AutomationRadarrClient = {
+  getStatus?(): Promise<unknown> | unknown;
   getReleasesForMovie(movieId: number): Promise<ArrRelease[]> | ArrRelease[];
   grabRelease(release: ArrRelease): Promise<void> | void;
 };
@@ -73,6 +75,7 @@ export function createAutomationExecutor(options: AutomationExecutorOptions): Au
   return async ({ goal, run, workItems, context }) => {
     let completed = 0;
     const activeItems = workItems.filter((item) => item.status !== "satisfied" && item.status !== "out_of_scope");
+    await preflightConnections(options.clients, activeItems, repositories, run, now());
 
     for (const item of activeItems) {
       context?.throwIfCancelled();
@@ -184,6 +187,23 @@ export function createAutomationExecutor(options: AutomationExecutorOptions): Au
 
     return { completed };
   };
+}
+
+async function preflightConnections(
+  clients: AutomationArrClients,
+  items: AutomationWorkItemView[],
+  repositories: Repositories,
+  run: AutomationRunView,
+  checkedAt: Date,
+): Promise<void> {
+  if (items.some((item) => item.kind === "episode") && clients.sonarr.getStatus) {
+    await clients.sonarr.getStatus();
+    recordEvent(repositories, run, "info", "Sonarr connection check passed", checkedAt);
+  }
+  if (items.some((item) => item.kind === "movie") && clients.radarr.getStatus) {
+    await clients.radarr.getStatus();
+    recordEvent(repositories, run, "info", "Radarr connection check passed", checkedAt);
+  }
 }
 
 function getReleases(clients: AutomationArrClients, item: AutomationWorkItemView): Promise<ArrRelease[]> | ArrRelease[] {

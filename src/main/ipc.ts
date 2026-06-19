@@ -285,11 +285,14 @@ export function registerIpcHandlers(state: IpcState): void {
     return state.repositories.automationGoals.find(input.goalId);
   });
   ipcMain.handle("automation:saveGoal", (_event, payload: unknown): AutomationGoalView => {
-    return state.repositories.automationGoals.upsert({ ...assertAutomationGoalInput(payload), now: new Date() });
+    const goal = state.repositories.automationGoals.upsert({ ...assertAutomationGoalInput(payload), now: new Date() });
+    registerAutomationGoalSchedule(state, goal);
+    return goal;
   });
   ipcMain.handle("automation:deleteGoal", (_event, payload: unknown) => {
     const input = assertAutomationGoalIdInput(payload);
     state.repositories.automationGoals.delete(input.goalId);
+    state.scheduler.remove(automationScheduleId(input.goalId));
     return { ok: true };
   });
   ipcMain.handle("automation:reorderGoals", (_event, payload: unknown): AutomationGoalView[] => {
@@ -300,12 +303,16 @@ export function registerIpcHandlers(state: IpcState): void {
   ipcMain.handle("automation:pauseGoal", (_event, payload: unknown): AutomationGoalView | undefined => {
     const input = assertAutomationGoalIdInput(payload);
     state.repositories.automationGoals.setManualStatus(input.goalId, "paused_by_user", new Date());
-    return state.repositories.automationGoals.find(input.goalId);
+    const goal = state.repositories.automationGoals.find(input.goalId);
+    if (goal) registerAutomationGoalSchedule(state, goal);
+    return goal;
   });
   ipcMain.handle("automation:resumeGoal", (_event, payload: unknown): AutomationGoalView | undefined => {
     const input = assertAutomationGoalIdInput(payload);
     state.repositories.automationGoals.setManualStatus(input.goalId, "active", new Date());
-    return state.repositories.automationGoals.find(input.goalId);
+    const goal = state.repositories.automationGoals.find(input.goalId);
+    if (goal) registerAutomationGoalSchedule(state, goal);
+    return goal;
   });
   ipcMain.handle("automation:runGoal", (_event, payload: unknown) => {
     const input = assertAutomationGoalIdInput(payload);
@@ -356,6 +363,10 @@ export function registerIpcHandlers(state: IpcState): void {
 export function createProductionAutomationRunner(state: Pick<IpcState, "instanceStore" | "jobRunner" | "repositories">): AutomationRunner {
   const clients: AutomationArrClients = {
     sonarr: {
+      getStatus: () => {
+        const config = state.instanceStore.getWithApiKey("sonarr");
+        return new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).getStatus();
+      },
       getReleasesForEpisode: (episodeId) => {
         const config = state.instanceStore.getWithApiKey("sonarr");
         return new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).getReleasesForEpisode(episodeId);
@@ -366,6 +377,10 @@ export function createProductionAutomationRunner(state: Pick<IpcState, "instance
       },
     },
     radarr: {
+      getStatus: () => {
+        const config = state.instanceStore.getWithApiKey("radarr");
+        return new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).getStatus();
+      },
       getReleasesForMovie: (movieId) => {
         const config = state.instanceStore.getWithApiKey("radarr");
         return new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).getReleasesForMovie(movieId);
@@ -1296,6 +1311,39 @@ export function registerPersistedSchedules(state: IpcState): void {
   for (const schedule of state.repositories.schedules.list()) {
     registerSchedule(state, schedule);
   }
+}
+
+export async function registerPersistedAutomationGoals(state: IpcState): Promise<void> {
+  for (const goal of state.repositories.automationGoals.list()) {
+    registerAutomationGoalSchedule(state, goal);
+  }
+  await getAutomationRunner(state).runEligible("startup");
+}
+
+function registerAutomationGoalSchedule(state: IpcState, goal: AutomationGoalView): void {
+  const scheduleId = automationScheduleId(goal.id);
+  if (!goal.enabled || goal.manualStatus !== "active" || !goal.schedule?.enabled) {
+    state.scheduler.remove(scheduleId);
+    return;
+  }
+
+  state.scheduler.upsert({
+    id: scheduleId,
+    name: `Automation: ${goal.name}`,
+    enabled: true,
+    rule: {
+      intervalKind: goal.schedule.intervalKind,
+      intervalValue: goal.schedule.intervalValue,
+      timeOfDay: goal.schedule.timeOfDay,
+    },
+    run: async () => {
+      await getAutomationRunner(state).runGoal(goal.id, "schedule");
+    },
+  });
+}
+
+function automationScheduleId(goalId: number): string {
+  return `automation:${goalId}`;
 }
 
 function registerSchedule(state: IpcState, schedule: ScheduleView): void {

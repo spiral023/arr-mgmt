@@ -27,6 +27,7 @@ import {
 } from "./state/ipc-client";
 import { shouldRefreshRadarrRows, shouldRefreshSonarrRows } from "./state/refresh-policy";
 import { createRefreshScheduler } from "./state/refresh-scheduler";
+import { AutomationView } from "./views/AutomationView";
 import { DashboardView } from "./views/DashboardView";
 import { JobsView } from "./views/JobsView";
 import { QuotaView } from "./views/QuotaView";
@@ -315,6 +316,7 @@ export function App() {
         />
       ) : null}
       {activeTab === "stats" ? <StatsView /> : null}
+      {activeTab === "automation" ? <AutomationView /> : null}
       {activeTab === "jobs" ? <JobsView /> : null}
       {activeTab === "quotas" ? <QuotaView /> : null}
       {activeTab === "settings" ? <SettingsView /> : null}
