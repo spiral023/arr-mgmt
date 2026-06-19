@@ -157,6 +157,18 @@ export function createRepositories(db: AppDatabase) {
           );
         }
 
+        // Any child (movie or episode) that now has a FuN file has reached its
+        // target — drop stale FuN candidates so it is no longer counted as
+        // "Pending FuN*" nor picked up by a grab run.
+        db.prepare(
+          `delete from release_candidates
+           where media_item_id = ?
+             and child_arr_id in (
+               select child_arr_id from media_files
+               where media_item_id = ? and is_fun = 1
+             )`,
+        ).run(mediaItem.id, mediaItem.id);
+
         return mediaItem.id;
       },
 
@@ -574,6 +586,52 @@ export function createRepositories(db: AppDatabase) {
           .all(input.scope, input.scope) as AutomationMediaFileRow[];
 
         return rows.map(formatAutomationMediaFileRow);
+      },
+    },
+
+    mediaItemOverrides: {
+      setExcluded(input: {
+        kind: "series" | "movie";
+        arrId: number;
+        excluded: boolean;
+        note?: string | null;
+        now: Date;
+      }): { ok: boolean; message: string } {
+        const item = db
+          .prepare("select id from media_items where kind = ? and arr_id = ? order by id desc limit 1")
+          .get(input.kind, input.arrId) as { id: number } | undefined;
+        if (!item) {
+          return { ok: false, message: "Media item not found" };
+        }
+        const now = toIso(input.now);
+        const apply = db.transaction(() => {
+          db.prepare(
+            `insert into media_item_overrides (media_item_id, is_excluded, note, created_at, updated_at)
+             values (?, ?, ?, ?, ?)
+             on conflict(media_item_id) do update set
+               is_excluded = excluded.is_excluded,
+               updated_at = excluded.updated_at`,
+          ).run(item.id, input.excluded ? 1 : 0, input.note ?? null, now, now);
+          if (input.excluded) {
+            db.prepare("delete from release_candidates where media_item_id = ?").run(item.id);
+          }
+        });
+        apply();
+        return { ok: true, message: input.excluded ? "Item excluded from automation and grabbing" : "Item override removed" };
+      },
+
+      isExcluded(mediaItemId: number): boolean {
+        const row = db
+          .prepare("select 1 as present from media_item_overrides where media_item_id = ? and is_excluded = 1")
+          .get(mediaItemId) as { present: number } | undefined;
+        return row !== undefined;
+      },
+
+      excludedItemIds(): number[] {
+        const rows = db
+          .prepare("select media_item_id as mediaItemId from media_item_overrides where is_excluded = 1")
+          .all() as Array<{ mediaItemId: number }>;
+        return rows.map((row) => row.mediaItemId);
       },
     },
 

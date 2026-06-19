@@ -237,6 +237,16 @@ const statements = [
   "create index if not exists idx_automation_work_items_goal_sort on automation_work_items(goal_id, sort_key)",
   "create index if not exists idx_automation_runs_goal on automation_runs(goal_id, started_at)",
   "create index if not exists idx_automation_events_goal on automation_events(goal_id, created_at)",
+  `create table if not exists media_item_overrides (
+    id integer primary key autoincrement,
+    media_item_id integer not null references media_items(id) on delete cascade,
+    is_excluded integer not null default 1,
+    note text,
+    created_at text not null,
+    updated_at text not null,
+    unique(media_item_id)
+  )`,
+  "create index if not exists idx_media_item_overrides_item on media_item_overrides(media_item_id)",
 ];
 
 export function migrateDatabase(db: AppDatabase): void {
