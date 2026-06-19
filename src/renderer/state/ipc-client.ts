@@ -2,6 +2,12 @@ import type {
   ActivityRowView,
   AppSettingsInput,
   ArrActionResult,
+  AutomationEventView,
+  AutomationGoalIdInput,
+  AutomationGoalInput,
+  AutomationGoalView,
+  AutomationReorderInput,
+  AutomationRunView,
   InstanceConfigInput,
   InstanceConfigView,
   InstanceTestResult,
@@ -175,6 +181,46 @@ export function deleteSchedule(input: ScheduleDeleteInput): Promise<{ ok: boolea
   return invokeIpc<{ ok: boolean }>("schedules:delete", input);
 }
 
+export function listAutomationGoals(): Promise<AutomationGoalView[]> {
+  return invokeIpc<AutomationGoalView[]>("automation:listGoals");
+}
+
+export function getAutomationGoal(goalId: number): Promise<AutomationGoalView | undefined> {
+  return invokeIpc<AutomationGoalView | undefined>("automation:getGoal", { goalId } satisfies AutomationGoalIdInput);
+}
+
+export function saveAutomationGoal(input: AutomationGoalInput): Promise<AutomationGoalView> {
+  return invokeIpc<AutomationGoalView>("automation:saveGoal", input);
+}
+
+export function deleteAutomationGoal(goalId: number): Promise<{ ok: boolean }> {
+  return invokeIpc<{ ok: boolean }>("automation:deleteGoal", { goalId } satisfies AutomationGoalIdInput);
+}
+
+export function reorderAutomationGoals(goalIds: number[]): Promise<AutomationGoalView[]> {
+  return invokeIpc<AutomationGoalView[]>("automation:reorderGoals", { goalIds } satisfies AutomationReorderInput);
+}
+
+export function pauseAutomationGoal(goalId: number): Promise<AutomationGoalView | undefined> {
+  return invokeIpc<AutomationGoalView | undefined>("automation:pauseGoal", { goalId } satisfies AutomationGoalIdInput);
+}
+
+export function resumeAutomationGoal(goalId: number): Promise<AutomationGoalView | undefined> {
+  return invokeIpc<AutomationGoalView | undefined>("automation:resumeGoal", { goalId } satisfies AutomationGoalIdInput);
+}
+
+export function runAutomationGoal(goalId: number): Promise<AutomationRunView> {
+  return invokeIpc<AutomationRunView>("automation:runGoal", { goalId } satisfies AutomationGoalIdInput);
+}
+
+export function runAutomationEligible(): Promise<AutomationRunView[]> {
+  return invokeIpc<AutomationRunView[]>("automation:runEligible");
+}
+
+export function listAutomationEvents(goalId: number): Promise<AutomationEventView[]> {
+  return invokeIpc<AutomationEventView[]>("automation:listEvents", { goalId } satisfies AutomationGoalIdInput);
+}
+
 export function completeOnboarding(): Promise<{ ok: boolean }> {
   return invokeIpc("onboarding:complete");
 }
@@ -226,6 +272,36 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
   }
   if (channel === "schedules:delete") {
     return { ok: true } as T;
+  }
+  if (channel === "automation:listGoals") {
+    return [browserAutomationGoal()] as T;
+  }
+  if (channel === "automation:getGoal" || channel === "automation:saveGoal" || channel === "automation:pauseGoal" || channel === "automation:resumeGoal") {
+    return browserAutomationGoal() as T;
+  }
+  if (channel === "automation:deleteGoal") {
+    return { ok: true } as T;
+  }
+  if (channel === "automation:reorderGoals") {
+    return [browserAutomationGoal()] as T;
+  }
+  if (channel === "automation:runGoal") {
+    return {
+      id: 1,
+      goalId: 1,
+      trigger: "manual",
+      status: "completed",
+      progressCurrent: 0,
+      progressTotal: 0,
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+    } as T;
+  }
+  if (channel === "automation:runEligible") {
+    return [] as T;
+  }
+  if (channel === "automation:listEvents") {
+    return [] as T;
   }
   if (channel === "instances:test") {
     return { ok: false, message: "IPC is only available in the Electron app." } as T;
@@ -320,4 +396,37 @@ function getBrowserFallback<T>(channel: IpcChannel): T {
     return { ok: true, message: "Pipeline resumed (browser preview)" } as T;
   }
   return {} as T;
+}
+
+function browserAutomationGoal(): AutomationGoalView {
+  return {
+    actionMode: "search_and_grab",
+    currentFunShare: 0.38,
+    enabled: true,
+    executionStrategy: "grab_immediately",
+    filters: {
+      analyzed: { mode: "any" },
+      funShare: { operator: "lt", value: 0.95 },
+      grabbed: { mode: "any" },
+      hasFile: "yes",
+      monitored: "yes",
+      qualityProfiles: [],
+      searched: { mode: "any" },
+    },
+    id: 1,
+    lastRunAt: undefined,
+    manualStatus: "active",
+    matchingFiles: 12,
+    minSearchIntervalHours: 168,
+    name: "Preview automation",
+    ordering: "oldest_search_first",
+    pendingCandidates: 2,
+    priority: 1,
+    remainingNonFunFiles: 8,
+    runOnStartup: true,
+    schedule: null,
+    scope: "both",
+    status: "enabled",
+    targetFunShare: 0.95,
+  };
 }

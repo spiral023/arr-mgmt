@@ -5,6 +5,8 @@ import { selectSonarrSeriesForAnalysis } from "./arr/sonarr-analysis-plan";
 import { SonarrClient } from "./arr/sonarr-client";
 import { getNonFunEpisodeIds, getNonFunMovieIds, selectBestFunRelease } from "./arr/sonarr-operations";
 import type { ArrRelease } from "./arr/arr-types";
+import { createAutomationExecutor, type AutomationArrClients } from "./automation/automation-executor";
+import { AutomationRunner } from "./automation/automation-runner";
 import type { PerfSampleInsert } from "./db/schema";
 import { mapConcurrent } from "./async/map-concurrent";
 import { mapAdaptive, type AdaptivePoolResult } from "./async/adaptive-pool";
@@ -21,6 +23,10 @@ import type {
   ActivityRowView,
   AppSettingsInput,
   ArrActionResult,
+  AutomationGoalIdInput,
+  AutomationGoalInput,
+  AutomationGoalView,
+  AutomationReorderInput,
   InstanceConfigInput,
   InstanceKind,
   InstanceTestResult,
@@ -47,6 +53,7 @@ export type IpcState = {
   loginStartup?: LoginStartupAdapter;
   repositories: ReturnType<typeof createRepositories>;
   scheduler: Scheduler;
+  automationRunner?: AutomationRunner;
 };
 
 const ANALYSIS_CONCURRENCY = 4;
@@ -272,6 +279,43 @@ export function registerIpcHandlers(state: IpcState): void {
     state.scheduler.remove(String(input.id));
     return { ok: true };
   });
+  ipcMain.handle("automation:listGoals", (): AutomationGoalView[] => state.repositories.automationGoals.list());
+  ipcMain.handle("automation:getGoal", (_event, payload: unknown): AutomationGoalView | undefined => {
+    const input = assertAutomationGoalIdInput(payload);
+    return state.repositories.automationGoals.find(input.goalId);
+  });
+  ipcMain.handle("automation:saveGoal", (_event, payload: unknown): AutomationGoalView => {
+    return state.repositories.automationGoals.upsert({ ...assertAutomationGoalInput(payload), now: new Date() });
+  });
+  ipcMain.handle("automation:deleteGoal", (_event, payload: unknown) => {
+    const input = assertAutomationGoalIdInput(payload);
+    state.repositories.automationGoals.delete(input.goalId);
+    return { ok: true };
+  });
+  ipcMain.handle("automation:reorderGoals", (_event, payload: unknown): AutomationGoalView[] => {
+    const input = assertAutomationReorderInput(payload);
+    state.repositories.automationGoals.reorder(input.goalIds, new Date());
+    return state.repositories.automationGoals.list();
+  });
+  ipcMain.handle("automation:pauseGoal", (_event, payload: unknown): AutomationGoalView | undefined => {
+    const input = assertAutomationGoalIdInput(payload);
+    state.repositories.automationGoals.setManualStatus(input.goalId, "paused_by_user", new Date());
+    return state.repositories.automationGoals.find(input.goalId);
+  });
+  ipcMain.handle("automation:resumeGoal", (_event, payload: unknown): AutomationGoalView | undefined => {
+    const input = assertAutomationGoalIdInput(payload);
+    state.repositories.automationGoals.setManualStatus(input.goalId, "active", new Date());
+    return state.repositories.automationGoals.find(input.goalId);
+  });
+  ipcMain.handle("automation:runGoal", (_event, payload: unknown) => {
+    const input = assertAutomationGoalIdInput(payload);
+    return getAutomationRunner(state).runGoal(input.goalId, "manual");
+  });
+  ipcMain.handle("automation:runEligible", () => getAutomationRunner(state).runEligible("resume"));
+  ipcMain.handle("automation:listEvents", (_event, payload: unknown) => {
+    const input = assertAutomationGoalIdInput(payload);
+    return state.repositories.automationEvents.list(input.goalId);
+  });
   ipcMain.handle("instances:list", () => state.instanceStore.list());
   ipcMain.handle("instances:save", (_event, payload: unknown) => {
     const input = assertInstanceInput(payload);
@@ -307,6 +351,49 @@ export function registerIpcHandlers(state: IpcState): void {
       };
     }
   });
+}
+
+export function createProductionAutomationRunner(state: Pick<IpcState, "instanceStore" | "jobRunner" | "repositories">): AutomationRunner {
+  const clients: AutomationArrClients = {
+    sonarr: {
+      getReleasesForEpisode: (episodeId) => {
+        const config = state.instanceStore.getWithApiKey("sonarr");
+        return new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).getReleasesForEpisode(episodeId);
+      },
+      grabRelease: async (release) => {
+        const config = state.instanceStore.getWithApiKey("sonarr");
+        await new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).grabRelease(release);
+      },
+    },
+    radarr: {
+      getReleasesForMovie: (movieId) => {
+        const config = state.instanceStore.getWithApiKey("radarr");
+        return new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).getReleasesForMovie(movieId);
+      },
+      grabRelease: async (release) => {
+        const config = state.instanceStore.getWithApiKey("radarr");
+        await new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).grabRelease(release);
+      },
+    },
+  };
+
+  return new AutomationRunner({
+    repositories: state.repositories,
+    jobRunner: state.jobRunner,
+    getSettings: () => getAppSettings(state.repositories),
+    now: () => new Date(),
+    executor: createAutomationExecutor({
+      repositories: state.repositories,
+      getSettings: () => getAppSettings(state.repositories),
+      now: () => new Date(),
+      clients,
+    }),
+  });
+}
+
+function getAutomationRunner(state: IpcState): AutomationRunner {
+  state.automationRunner ??= createProductionAutomationRunner(state);
+  return state.automationRunner;
 }
 
 function enqueueSonarrAnalysis(state: IpcState, name = "Analyze Sonarr", seriesIds?: number[], sampleSize?: number) {
@@ -1418,6 +1505,87 @@ function assertScheduleDeleteInput(payload: unknown): ScheduleDeleteInput {
     throw new Error("Schedule id is required");
   }
   return { id: Number(value.id) };
+}
+
+function assertAutomationGoalIdInput(payload: unknown): AutomationGoalIdInput {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("goalId is required");
+  }
+  const value = payload as Partial<AutomationGoalIdInput>;
+  if (!Number.isInteger(value.goalId) || Number(value.goalId) <= 0) {
+    throw new Error("goalId is required");
+  }
+  return { goalId: Number(value.goalId) };
+}
+
+function assertAutomationReorderInput(payload: unknown): AutomationReorderInput {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("goalIds are required");
+  }
+  const value = payload as Partial<AutomationReorderInput>;
+  if (!Array.isArray(value.goalIds) || value.goalIds.length === 0) {
+    throw new Error("goalIds are required");
+  }
+  if (!value.goalIds.every((id) => Number.isInteger(id) && id > 0)) {
+    throw new Error("goalIds are required");
+  }
+  return { goalIds: value.goalIds };
+}
+
+function assertAutomationGoalInput(payload: unknown): AutomationGoalInput {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Invalid automation goal payload");
+  }
+  const value = payload as Partial<AutomationGoalInput>;
+  if (value.id !== undefined && (!Number.isInteger(value.id) || Number(value.id) <= 0)) {
+    throw new Error("Invalid automation goal id");
+  }
+  if (typeof value.name !== "string" || !value.name.trim()) {
+    throw new Error("Automation goal name is required");
+  }
+  if (value.scope !== "sonarr" && value.scope !== "radarr" && value.scope !== "both") {
+    throw new Error("Invalid automation goal scope");
+  }
+  if (value.actionMode !== "search_only" && value.actionMode !== "search_and_grab") {
+    throw new Error("Invalid automation action mode");
+  }
+  if (value.executionStrategy !== "grab_immediately" && value.executionStrategy !== "search_then_grab") {
+    throw new Error("Invalid automation execution strategy");
+  }
+  if (
+    value.ordering !== "oldest_search_first" &&
+    value.ordering !== "lowest_fun_share_first" &&
+    value.ordering !== "largest_impact_first" &&
+    value.ordering !== "alphabetical"
+  ) {
+    throw new Error("Invalid automation ordering");
+  }
+  const targetFunShare = value.targetFunShare;
+  const minSearchIntervalHours = value.minSearchIntervalHours;
+  if (typeof targetFunShare !== "number" || targetFunShare <= 0 || targetFunShare > 1) {
+    throw new Error("Invalid automation target FuN share");
+  }
+  if (typeof minSearchIntervalHours !== "number" || !Number.isInteger(minSearchIntervalHours) || minSearchIntervalHours < 0) {
+    throw new Error("Invalid automation search interval");
+  }
+  if (typeof value.filters !== "object" || value.filters === null) {
+    throw new Error("Automation filters are required");
+  }
+
+  return {
+    id: value.id,
+    name: value.name.trim(),
+    enabled: value.enabled ?? true,
+    scope: value.scope,
+    targetFunShare,
+    filters: value.filters,
+    actionMode: value.actionMode,
+    executionStrategy: value.executionStrategy,
+    ordering: value.ordering,
+    minSearchIntervalHours,
+    runOnStartup: value.runOnStartup ?? false,
+    schedule: value.schedule ?? null,
+  };
 }
 
 function assertRunCombinedInput(payload: unknown): RunCombinedInput {
