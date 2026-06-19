@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MediaItemAnalysis } from "../../src/main/arr/arr-types";
+import type { ArrRelease, MediaItemAnalysis } from "../../src/main/arr/arr-types";
+import { createAutomationExecutor, type AutomationArrClients } from "../../src/main/automation/automation-executor";
 import { AutomationRunner } from "../../src/main/automation/automation-runner";
 import { defaultAppSettings } from "../../src/main/settings/app-settings";
 import { createInMemoryDatabase } from "../../src/main/db/client";
@@ -23,7 +24,9 @@ const defaultFilters = {
 type GoalInputOverrides = Partial<{
   actionMode: "search_only" | "search_and_grab";
   enabled: boolean;
+  executionStrategy: "grab_immediately" | "search_then_grab";
   filters: AutomationGoalFilters;
+  minSearchIntervalHours: number;
   name: string;
   runOnStartup: boolean;
   targetFunShare: number;
@@ -175,6 +178,53 @@ describe("AutomationRunner", () => {
     );
   });
 
+  it("does not re-search a grabbed item after reconcile until a later analysis still finds it non-FuN", async () => {
+    const currentNow = { value: now };
+    const { goal, instanceId, repos } = createFixture({ minSearchIntervalHours: 1 });
+    const clients = createClients({
+      sonarrReleases: [release({ guid: "fun-102", releaseGroup: "FuN" })],
+    });
+    const runner = createRunner(repos, {
+      now: () => currentNow.value,
+      executor: createAutomationExecutor({
+        repositories: repos,
+        getSettings: () => defaultAppSettings,
+        now: () => currentNow.value,
+        clients,
+      }),
+    });
+
+    await runner.runGoal(goal.id);
+    currentNow.value = new Date("2026-06-25T12:00:00.000Z");
+    await runner.runGoal(goal.id);
+
+    expect(clients.sonarr.getReleasesForEpisode).toHaveBeenCalledTimes(1);
+    expect(clients.sonarr.grabRelease).toHaveBeenCalledTimes(1);
+    expect(repos.activityLog.countSince("search", currentNow.value, 24 * 30)).toBe(1);
+    expect(repos.activityLog.countSince("grab", currentNow.value, 24 * 30)).toBe(1);
+    expect(repos.automationWorkItems.listForGoal(goal.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          childArrId: 102,
+          lastAnalyzedAt: "2026-06-18T10:00:00.000Z",
+          lastGrabbedAt: "2026-06-18T12:00:00.000Z",
+        }),
+      ]),
+    );
+
+    repos.mediaItems.upsertAnalysis(instanceId, {
+      ...analysis(),
+      lastAnalyzedAt: "2026-06-26T10:00:00.000Z",
+    });
+    currentNow.value = new Date("2026-06-26T12:00:00.000Z");
+    await runner.runGoal(goal.id);
+
+    expect(clients.sonarr.getReleasesForEpisode).toHaveBeenCalledTimes(2);
+    expect(clients.sonarr.grabRelease).toHaveBeenCalledTimes(2);
+    expect(repos.activityLog.countSince("search", currentNow.value, 24 * 30)).toBe(2);
+    expect(repos.activityLog.countSince("grab", currentNow.value, 24 * 30)).toBe(2);
+  });
+
   it("runEligible startup runs only enabled active startup goals whose nextEligibleRunAt is due", async () => {
     const { db, repos } = createFixture();
     const dueStartupGoal = repos.automationGoals.upsert(goalInput({ name: "Due startup", runOnStartup: true }));
@@ -284,6 +334,33 @@ function createRunner(
     now: () => now,
     ...overrides,
   });
+}
+
+function createClients(input: { sonarrReleases?: ArrRelease[]; radarrReleases?: ArrRelease[] } = {}): AutomationArrClients {
+  return {
+    sonarr: {
+      getReleasesForEpisode: vi.fn(async () => input.sonarrReleases ?? []),
+      grabRelease: vi.fn(async () => undefined),
+    },
+    radarr: {
+      getReleasesForMovie: vi.fn(async () => input.radarrReleases ?? []),
+      grabRelease: vi.fn(async () => undefined),
+    },
+  };
+}
+
+function release(overrides: Partial<ArrRelease> = {}): ArrRelease {
+  return {
+    approved: true,
+    downloadAllowed: true,
+    guid: "release-guid",
+    indexer: "Indexer",
+    quality: { quality: { name: "WEBDL-1080p" } },
+    releaseGroup: "FuN",
+    size: 1_000,
+    title: "Example.Release.FuN",
+    ...overrides,
+  };
 }
 
 function createFixture(overrides: GoalInputOverrides = {}) {

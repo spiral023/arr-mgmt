@@ -193,7 +193,7 @@ function activityDetails(item: AutomationWorkItemView, message: string) {
 }
 
 function shouldSkipAfterGrab(item: AutomationWorkItemView): boolean {
-  if (item.status !== "grabbed" || !item.lastGrabbedAt || !item.lastAnalyzedAt) {
+  if (!item.lastGrabbedAt || !item.lastAnalyzedAt) {
     return false;
   }
   return new Date(item.lastGrabbedAt).getTime() >= new Date(item.lastAnalyzedAt).getTime();
