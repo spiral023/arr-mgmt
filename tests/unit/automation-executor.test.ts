@@ -198,6 +198,72 @@ describe("createAutomationExecutor", () => {
     expect(fixture.repos.activityLog.countSince("search", now, 24)).toBe(1);
   });
 
+  it("stops before the next search when automation search safety is reached mid-run", async () => {
+    const settings: AppSettings = {
+      ...defaultAppSettings,
+      automation: { quotaSafetyPercent: 90 },
+      quota: { searchLimit: 10, grabLimit: 10, windowHours: 24 },
+    };
+    const fixture = createFixture({
+      goal: { actionMode: "search_only" },
+      includeSecondSonarr: true,
+      settings,
+    });
+    for (let index = 0; index < 8; index += 1) {
+      fixture.repos.activityLog.insert({
+        action: "search",
+        quotaType: "search",
+        status: "success",
+        createdAt: new Date(now.getTime() - index * 60_000),
+      });
+    }
+    const clients = createClients({ sonarrReleases: [release({ guid: "fun-102", releaseGroup: "FuN" })] });
+    const executor = createExecutor(fixture, clients);
+    const workItems = fixture.repos.automationWorkItems.listForGoal(fixture.goal.id);
+
+    const promise = executor({
+      goal: fixture.goal,
+      run: fixture.run,
+      workItems,
+    });
+
+    await expect(promise).rejects.toEqual(expect.objectContaining({ action: "search", completed: 1 }));
+    expect(clients.sonarr.getReleasesForEpisode).toHaveBeenCalledTimes(1);
+    expect(clients.sonarr.getReleasesForEpisode).toHaveBeenCalledWith(102);
+    expect(fixture.repos.activityLog.countSince("search", now, 24)).toBe(9);
+  });
+
+  it("stops before the next grab when automation grab safety is reached mid-run", async () => {
+    const settings: AppSettings = {
+      ...defaultAppSettings,
+      automation: { quotaSafetyPercent: 90 },
+      quota: { searchLimit: 20, grabLimit: 10, windowHours: 24 },
+    };
+    const fixture = createFixture({ includeSecondSonarr: true, settings });
+    for (let index = 0; index < 8; index += 1) {
+      fixture.repos.activityLog.insert({
+        action: "grab",
+        quotaType: "grab",
+        status: "success",
+        createdAt: new Date(now.getTime() - index * 60_000),
+      });
+    }
+    const clients = createClients({ sonarrReleases: [release({ guid: "fun-102", releaseGroup: "FuN" })] });
+    const executor = createExecutor(fixture, clients);
+    const workItems = fixture.repos.automationWorkItems.listForGoal(fixture.goal.id);
+
+    const promise = executor({
+      goal: fixture.goal,
+      run: fixture.run,
+      workItems,
+    });
+
+    await expect(promise).rejects.toEqual(expect.objectContaining({ action: "grab", completed: 1 }));
+    expect(clients.sonarr.getReleasesForEpisode).toHaveBeenCalledTimes(2);
+    expect(clients.sonarr.grabRelease).toHaveBeenCalledTimes(1);
+    expect(fixture.repos.activityLog.countSince("grab", now, 24)).toBe(9);
+  });
+
   it("searches Radarr movies through the injected Radarr client", async () => {
     const fixture = createFixture({ includeRadarr: true });
     const clients = createClients({
@@ -257,6 +323,7 @@ function createFixture(
   options: {
     goal?: Partial<Pick<AutomationGoalView, "actionMode" | "executionStrategy" | "minSearchIntervalHours" | "scope">>;
     includeRadarr?: boolean;
+    includeSecondSonarr?: boolean;
     lastSearchedAt?: string | null;
     settings?: AppSettings;
   } = {},
@@ -276,23 +343,41 @@ function createFixture(
   const sonarrMediaItemId = repos.mediaItems.upsertAnalysis(sonarrInstanceId, sonarrAnalysis());
   const goal = repos.automationGoals.upsert(goalInput(options.goal));
   const sonarrFile = repos.mediaFiles.listForAutomation({ scope: "sonarr" }).find((item) => item.childArrId === 102)!;
-  repos.automationWorkItems.reconcile(goal.id, [
+  const sonarrWorkItems = [
     {
       instanceId: sonarrInstanceId,
       mediaItemId: sonarrMediaItemId,
       mediaFileId: sonarrFile.mediaFileId,
       childArrId: 102,
-      kind: "episode",
+      kind: "episode" as const,
       title: "Example Series S01E02",
       sortKey: "example series s01e02",
       isFun: false,
       lastAnalyzedAt: "2026-06-18T10:00:00.000Z",
       lastGrabbedAt: null,
       lastSearchedAt: options.lastSearchedAt ?? null,
-      status: "pending",
+      status: "pending" as const,
       now,
     },
-  ]);
+  ];
+  if (options.includeSecondSonarr) {
+    sonarrWorkItems.push({
+      instanceId: sonarrInstanceId,
+      mediaItemId: sonarrMediaItemId,
+      mediaFileId: sonarrFile.mediaFileId,
+      childArrId: 103,
+      kind: "episode" as const,
+      title: "Example Series S01E03",
+      sortKey: "example series s01e03",
+      isFun: false,
+      lastAnalyzedAt: "2026-06-18T10:00:00.000Z",
+      lastGrabbedAt: null,
+      lastSearchedAt: null,
+      status: "pending" as const,
+      now,
+    });
+  }
+  repos.automationWorkItems.reconcile(goal.id, sonarrWorkItems);
   const run = repos.automationRuns.start({ goalId: goal.id, trigger: "manual", now });
 
   let radarrGoal = goal;

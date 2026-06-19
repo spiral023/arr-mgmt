@@ -4,6 +4,7 @@ import { selectBestFunRelease } from "../arr/sonarr-operations";
 import { QuotaService, type QuotaAction } from "../scheduler/quota-service";
 import { defaultAppSettings } from "../settings/app-settings";
 import type { AutomationExecutionAdapter } from "./automation-runner";
+import { shouldStopForQuotaSafety } from "./quota-safety";
 import type { AppSettings, AutomationRunView, AutomationWorkItemView } from "../../shared/ipc-contracts";
 
 type Repositories = ReturnType<typeof createRepositories>;
@@ -54,6 +55,20 @@ export function createAutomationExecutor(options: AutomationExecutorOptions): Au
       now,
       ...getSettings().quota,
     });
+  const assertQuotaSafety = (action: QuotaAction, completed: number) => {
+    const settings = getSettings();
+    const limit = action === "search" ? settings.quota.searchLimit : settings.quota.grabLimit;
+    const used = repositories.activityLog.countSince(action, now(), settings.quota.windowHours);
+    if (
+      shouldStopForQuotaSafety({
+        used,
+        limit,
+        stopAtPercent: settings.automation.quotaSafetyPercent,
+      })
+    ) {
+      throw new AutomationQuotaSafetyError(action, completed);
+    }
+  };
 
   return async ({ goal, run, workItems, context }) => {
     let completed = 0;
@@ -80,6 +95,7 @@ export function createAutomationExecutor(options: AutomationExecutorOptions): Au
         continue;
       }
 
+      assertQuotaSafety("search", completed);
       const searchReservation = quota().reserve("search", activityDetails(item, `Automation search: ${item.title}`));
       if (!searchReservation.allowed) {
         throw new AutomationQuotaSafetyError("search", completed);
@@ -125,6 +141,7 @@ export function createAutomationExecutor(options: AutomationExecutorOptions): Au
         searchCompleted = true;
 
         if (goal.actionMode === "search_and_grab" && goal.executionStrategy === "grab_immediately") {
+          assertQuotaSafety("grab", completed);
           const grabReservation = quota().reserve("grab", activityDetails(item, `Automation grab: ${item.title}`));
           if (!grabReservation.allowed) {
             throw new AutomationQuotaSafetyError("grab", completed);
