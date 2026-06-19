@@ -53,6 +53,29 @@ describe("automation IPC handlers", () => {
     await expect(invoke("automation:reorderGoals", { goalIds: [1, 0] })).rejects.toThrow("goalIds are required");
     await expect(invoke("automation:reorderGoals", { goalIds: [1, "2"] })).rejects.toThrow("goalIds are required");
   });
+
+  it("validates automation goal payload shape before saving", async () => {
+    const { registerIpcHandlers } = await import("../../src/main/ipc");
+    registerIpcHandlers(createState());
+
+    await expect(invoke("automation:saveGoal", goalInput({ targetFunShare: Number.NaN }))).rejects.toThrow(
+      "Invalid automation target FuN share",
+    );
+    await expect(
+      invoke("automation:saveGoal", goalInput({ filters: { monitored: "yes" } })),
+    ).rejects.toThrow("Automation filters are required");
+    await expect(
+      invoke(
+        "automation:saveGoal",
+        goalInput({
+          filters: {
+            ...defaultFilters(),
+            searched: { mode: "older_than", days: 0 },
+          },
+        }),
+      ),
+    ).rejects.toThrow("Invalid automation recency filter");
+  });
 });
 
 const automationChannels: IpcChannel[] = [
@@ -115,4 +138,33 @@ function createState(overrides: Record<string, unknown> = {}) {
     scheduler: { remove: vi.fn(), register: vi.fn() },
     ...overrides,
   } as never;
+}
+
+function goalInput(overrides: Record<string, unknown> = {}) {
+  return {
+    actionMode: "search_and_grab",
+    enabled: true,
+    executionStrategy: "grab_immediately",
+    filters: defaultFilters(),
+    minSearchIntervalHours: 168,
+    name: "Goal",
+    ordering: "oldest_search_first",
+    runOnStartup: true,
+    schedule: null,
+    scope: "sonarr",
+    targetFunShare: 0.95,
+    ...overrides,
+  };
+}
+
+function defaultFilters() {
+  return {
+    analyzed: { mode: "any" },
+    funShare: { operator: "lt", value: 0.95 },
+    grabbed: { mode: "any" },
+    hasFile: "yes",
+    monitored: "yes",
+    qualityProfiles: [],
+    searched: { mode: "older_than", days: 7 },
+  };
 }

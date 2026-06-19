@@ -1562,15 +1562,13 @@ function assertAutomationGoalInput(payload: unknown): AutomationGoalInput {
   }
   const targetFunShare = value.targetFunShare;
   const minSearchIntervalHours = value.minSearchIntervalHours;
-  if (typeof targetFunShare !== "number" || targetFunShare <= 0 || targetFunShare > 1) {
+  if (typeof targetFunShare !== "number" || !Number.isFinite(targetFunShare) || targetFunShare <= 0 || targetFunShare > 1) {
     throw new Error("Invalid automation target FuN share");
   }
   if (typeof minSearchIntervalHours !== "number" || !Number.isInteger(minSearchIntervalHours) || minSearchIntervalHours < 0) {
     throw new Error("Invalid automation search interval");
   }
-  if (typeof value.filters !== "object" || value.filters === null) {
-    throw new Error("Automation filters are required");
-  }
+  const filters = assertAutomationFilters(value.filters);
 
   return {
     id: value.id,
@@ -1578,7 +1576,7 @@ function assertAutomationGoalInput(payload: unknown): AutomationGoalInput {
     enabled: value.enabled ?? true,
     scope: value.scope,
     targetFunShare,
-    filters: value.filters,
+    filters,
     actionMode: value.actionMode,
     executionStrategy: value.executionStrategy,
     ordering: value.ordering,
@@ -1586,6 +1584,64 @@ function assertAutomationGoalInput(payload: unknown): AutomationGoalInput {
     runOnStartup: value.runOnStartup ?? false,
     schedule: value.schedule ?? null,
   };
+}
+
+function assertAutomationFilters(value: unknown): AutomationGoalInput["filters"] {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Automation filters are required");
+  }
+  const filters = value as Partial<AutomationGoalInput["filters"]>;
+  if (!isAutomationTriState(filters.monitored) || !isAutomationTriState(filters.hasFile)) {
+    throw new Error("Automation filters are required");
+  }
+  if (!Array.isArray(filters.qualityProfiles) || !filters.qualityProfiles.every((profile) => typeof profile === "string")) {
+    throw new Error("Automation filters are required");
+  }
+  return {
+    monitored: filters.monitored,
+    hasFile: filters.hasFile,
+    qualityProfiles: filters.qualityProfiles,
+    funShare: assertAutomationFunShareFilter(filters.funShare),
+    analyzed: assertAutomationRecencyFilter(filters.analyzed),
+    searched: assertAutomationRecencyFilter(filters.searched),
+    grabbed: assertAutomationRecencyFilter(filters.grabbed),
+  };
+}
+
+function assertAutomationFunShareFilter(value: unknown): AutomationGoalInput["filters"]["funShare"] {
+  if (value == null) return null;
+  if (typeof value !== "object") {
+    throw new Error("Invalid automation FuN share filter");
+  }
+  const filter = value as Partial<NonNullable<AutomationGoalInput["filters"]["funShare"]>>;
+  if (filter.operator !== "lt" && filter.operator !== "lte" && filter.operator !== "gt" && filter.operator !== "gte") {
+    throw new Error("Invalid automation FuN share filter");
+  }
+  if (typeof filter.value !== "number" || !Number.isFinite(filter.value) || filter.value < 0 || filter.value > 1) {
+    throw new Error("Invalid automation FuN share filter");
+  }
+  return { operator: filter.operator, value: filter.value };
+}
+
+function assertAutomationRecencyFilter(value: unknown): AutomationGoalInput["filters"]["analyzed"] {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Invalid automation recency filter");
+  }
+  const filter = value as Partial<AutomationGoalInput["filters"]["analyzed"]>;
+  if (filter.mode === "any" || filter.mode === "never") {
+    return { mode: filter.mode };
+  }
+  if (filter.mode === "older_than" || filter.mode === "within_last") {
+    if (typeof filter.days !== "number" || !Number.isInteger(filter.days) || filter.days <= 0) {
+      throw new Error("Invalid automation recency filter");
+    }
+    return { mode: filter.mode, days: filter.days };
+  }
+  throw new Error("Invalid automation recency filter");
+}
+
+function isAutomationTriState(value: unknown): value is AutomationGoalInput["filters"]["monitored"] {
+  return value === "yes" || value === "no" || value === "either";
 }
 
 function assertRunCombinedInput(payload: unknown): RunCombinedInput {
