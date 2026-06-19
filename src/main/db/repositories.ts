@@ -526,7 +526,7 @@ export function createRepositories(db: AppDatabase) {
                  media_item_id,
                  child_arr_id,
                  max(case when action = 'search' then created_at end) as lastSearchedAt,
-                 max(case when action = 'grab' then created_at end) as lastGrabbedAt
+                 max(case when action = 'grab' and status = 'success' then created_at end) as lastGrabbedAt
                from activity_log
                where action in ('search', 'grab')
                  and status in ('started', 'success', 'failed')

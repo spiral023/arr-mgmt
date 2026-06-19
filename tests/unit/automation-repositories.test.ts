@@ -140,6 +140,15 @@ describe("automation repositories", () => {
       childArrId: 102,
       createdAt: new Date("2026-06-18T09:30:00.000Z"),
     });
+    repos.activityLog.insert({
+      action: "grab",
+      quotaType: "grab",
+      status: "failed",
+      instanceId,
+      mediaItemId,
+      childArrId: 102,
+      createdAt: new Date("2026-06-18T09:45:00.000Z"),
+    });
 
     const files = repos.mediaFiles.listForAutomation({ scope: "sonarr" });
     expect(files).toHaveLength(2);
