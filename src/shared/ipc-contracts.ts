@@ -41,7 +41,8 @@ export type IpcChannel =
   | "automation:resumeGoal"
   | "automation:runGoal"
   | "automation:runEligible"
-  | "automation:listEvents";
+  | "automation:listEvents"
+  | "media:setOverride";
 
 export type SonarrSeriesActionInput = {
   seriesIds: number[];
@@ -49,6 +50,13 @@ export type SonarrSeriesActionInput = {
 
 export type RadarrMovieActionInput = {
   movieIds: number[];
+};
+
+export type MediaOverrideInput = {
+  kind: "series" | "movie";
+  arrId: number;
+  excluded: boolean;
+  note?: string;
 };
 
 export type ArrActionResult = {

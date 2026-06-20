@@ -18,6 +18,7 @@ import type {
   ManualGrabInput,
   MediaItemDetails,
   MediaItemDetailsInput,
+  MediaOverrideInput,
   QuotaSummary,
   RadarrActionResult,
   RadarrMovieActionInput,
@@ -143,6 +144,10 @@ export function searchRadarrMovies(movieIds: number[]): Promise<RadarrActionResu
 
 export function grabRadarrMovies(movieIds: number[]): Promise<RadarrActionResult> {
   return invokeIpc<RadarrActionResult>("radarr:grab", { movieIds } satisfies RadarrMovieActionInput);
+}
+
+export function setMediaOverride(input: MediaOverrideInput): Promise<ArrActionResult> {
+  return invokeIpc<ArrActionResult>("media:setOverride", input);
 }
 
 export function runCombined(input: RunCombinedInput): Promise<ArrActionResult> {

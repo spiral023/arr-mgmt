@@ -35,6 +35,7 @@ import type {
   LibrarySummary,
   ManualGrabInput,
   MediaItemDetailsInput,
+  MediaOverrideInput,
   QuotaSummary,
   RadarrActionResult,
   RadarrMovieActionInput,
@@ -176,6 +177,11 @@ export function registerIpcHandlers(state: IpcState): void {
   ipcMain.handle("library:itemDetails", (_event, payload: unknown) => {
     const input = assertItemDetailsInput(payload);
     return state.repositories.mediaItems.itemDetails(input.kind, input.arrId);
+  });
+  ipcMain.handle("media:setOverride", (_event, payload: unknown): ArrActionResult => {
+    const input = assertMediaOverrideInput(payload);
+    const result = state.repositories.mediaItemOverrides.setExcluded({ ...input, now: new Date() });
+    return { ok: result.ok, message: result.message };
   });
   ipcMain.handle("stats:summary", () => state.repositories.stats.summary());
   ipcMain.handle("activity:recent", (): ActivityRowView[] => state.repositories.activityLog.listRecent(50).map(formatActivityRow));
@@ -1490,6 +1496,31 @@ function assertMovieActionInput(payload: unknown): RadarrMovieActionInput {
   }
   return {
     movieIds: value.movieIds.filter((id): id is number => Number.isInteger(id) && id > 0),
+  };
+}
+
+export function assertMediaOverrideInput(payload: unknown): MediaOverrideInput {
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Invalid media override payload");
+  }
+  const value = payload as Partial<MediaOverrideInput>;
+  if (value.kind !== "series" && value.kind !== "movie") {
+    throw new Error("Invalid media override kind");
+  }
+  if (!Number.isInteger(value.arrId) || Number(value.arrId) <= 0) {
+    throw new Error("Invalid media override arrId");
+  }
+  if (typeof value.excluded !== "boolean") {
+    throw new Error("Invalid media override excluded flag");
+  }
+  if (value.note !== undefined && typeof value.note !== "string") {
+    throw new Error("Invalid media override note");
+  }
+  return {
+    kind: value.kind,
+    arrId: Number(value.arrId),
+    excluded: value.excluded,
+    note: value.note,
   };
 }
 
