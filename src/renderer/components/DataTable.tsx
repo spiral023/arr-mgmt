@@ -22,7 +22,7 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ChevronsUpDown, Columns3, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown, Columns3, Search, X } from "lucide-react";
 import { clsx } from "clsx";
 
 // Per-column display hints. `sticky: "left"` pins the column while the table
@@ -276,10 +276,21 @@ export function DataTable<TData extends object>({
       {/* Selection action bar — only present when rows are selected */}
       {bulkActions && hasSelection ? (
         <div className="flex animate-fade-up flex-col gap-2 border-b border-white/[0.06] bg-signal-cyan/[0.04] px-4 py-2 md:flex-row md:items-center md:justify-between">
-          <span className="inline-flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.06em] text-signal-cyan">
-            <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-signal-cyan" />
-            {selectedLabel}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.06em] text-signal-cyan">
+              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-signal-cyan" />
+              {selectedLabel}
+            </span>
+            <button
+              aria-label="Clear selection"
+              className="inline-flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.02] px-2 text-[11px] font-medium text-ink-300 outline-none transition-[background-color,border-color,box-shadow,scale] duration-150 ease-out hover:bg-white/[0.07] hover:text-white focus-visible:ring-2 focus-visible:ring-signal-cyan/40 active:scale-[0.96]"
+              onClick={() => table.resetRowSelection()}
+              type="button"
+            >
+              <X aria-hidden="true" className="h-3 w-3" />
+              Deselect all
+            </button>
+          </div>
           <div className="flex flex-wrap gap-2">{bulkActions(selectedRows)}</div>
         </div>
       ) : null}

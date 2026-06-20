@@ -136,6 +136,48 @@ describe("repositories", () => {
     ]);
   });
 
+  it("clears stale FuN candidates for children that reached their target on re-analysis", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+
+    const instanceId = repos.instances.upsert({
+      kind: "sonarr",
+      name: "Sonarr",
+      baseUrl: "http://sonarr.local:8989",
+      apiKeyEncrypted: "encrypted",
+      enabled: true,
+      now: new Date("2026-06-13T20:00:00.000Z"),
+    });
+
+    const mediaItemId = repos.mediaItems.upsertAnalysis(instanceId, analysis());
+
+    // Episode 101 already has a FuN file; episode 102 does not yet.
+    repos.releaseCandidates.insert({
+      instanceId,
+      mediaItemId,
+      childArrId: 101,
+      release: { guid: "stale", title: "Example.Series.S01E01.FuN", releaseGroup: "FuN" },
+      foundAt: new Date("2026-06-13T20:12:00.000Z"),
+    });
+    repos.releaseCandidates.insert({
+      instanceId,
+      mediaItemId,
+      childArrId: 102,
+      release: { guid: "still-needed", title: "Example.Series.S01E02.FuN", releaseGroup: "FuN" },
+      foundAt: new Date("2026-06-13T20:13:00.000Z"),
+    });
+
+    // Re-analysing the same library state must drop the obsolete candidate for
+    // the FuN episode while keeping the one for the still-non-FuN episode.
+    repos.mediaItems.upsertAnalysis(instanceId, analysis());
+
+    expect(repos.mediaItems.listSonarrRows()).toEqual([
+      expect.objectContaining({ arrId: 7, pendingFunCandidates: 1 }),
+    ]);
+    expect(repos.releaseCandidates.listForSeriesIds([7]).map((c) => c.childArrId)).toEqual([102]);
+  });
+
   it("stores daily coverage snapshots and activity stats", () => {
     const db = createInMemoryDatabase();
     migrateDatabase(db);
