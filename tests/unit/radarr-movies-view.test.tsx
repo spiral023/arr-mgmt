@@ -46,6 +46,7 @@ function row(overrides: Partial<RadarrMovieTableRow>): RadarrMovieTableRow {
     monitored: true,
     nonFunFiles: 1,
     pendingFunCandidates: 0,
+    isExcluded: false,
     releaseGroup: "WvF",
     sizeBytes: 1_000,
     status: "searchable",

@@ -101,6 +101,7 @@ export type SonarrSeriesTableRow = {
   funShare: number;
   nonFunFiles: number;
   pendingFunCandidates: number;
+  isExcluded: boolean;
   hasFiles: boolean;
   lastAnalyzed: string;
   lastSearched: string;
@@ -122,6 +123,7 @@ export type RadarrMovieTableRow = {
   funShare: number;
   nonFunFiles: number;
   pendingFunCandidates: number;
+  isExcluded: boolean;
   releaseGroup: string | null;
   isFun: boolean;
   lastAnalyzed: string;

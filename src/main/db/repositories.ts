@@ -205,7 +205,8 @@ export function createRepositories(db: AppDatabase) {
                coalesce(sum(case when mi.kind = 'movie' then 1 else 0 end), 0) as radarrPending
              from release_candidates rc
              left join media_items mi on mi.id = rc.media_item_id
-             where rc.is_fun = 1`,
+             left join media_item_overrides o on o.media_item_id = rc.media_item_id and o.is_excluded = 1
+             where rc.is_fun = 1 and o.media_item_id is null`,
           )
           .get() as { sonarrPending: number; radarrPending: number };
         const grabs = db
@@ -264,11 +265,12 @@ export function createRepositories(db: AppDatabase) {
              ),
              pending_candidates as (
                select
-                 media_item_id,
+                 rc.media_item_id,
                  count(*) as pendingFunCandidates
-               from release_candidates
-               where is_fun = 1
-               group by media_item_id
+               from release_candidates rc
+               left join media_item_overrides o on o.media_item_id = rc.media_item_id and o.is_excluded = 1
+               where rc.is_fun = 1 and o.media_item_id is null
+               group by rc.media_item_id
              )
              select
                mi.id,
@@ -286,11 +288,13 @@ export function createRepositories(db: AppDatabase) {
                la.lastSearched,
                la.lastGrabbed,
                coalesce(pc.pendingFunCandidates, 0) as pendingFunCandidates,
+               case when ovr.media_item_id is not null then 1 else 0 end as isExcluded,
                mi.quality_profile_name as qualityProfileName
              from media_items mi
              join instances i on i.id = mi.instance_id
              left join last_activity la on la.media_item_id = mi.id
              left join pending_candidates pc on pc.media_item_id = mi.id
+             left join media_item_overrides ovr on ovr.media_item_id = mi.id and ovr.is_excluded = 1
              where i.kind = 'sonarr' and mi.kind = 'series'
              order by mi.title collate nocase`,
           )
@@ -310,6 +314,7 @@ export function createRepositories(db: AppDatabase) {
           lastSearched: string | null;
           lastGrabbed: string | null;
           pendingFunCandidates: number;
+          isExcluded: 0 | 1;
           qualityProfileName: string | null;
         }>;
 
@@ -328,6 +333,7 @@ export function createRepositories(db: AppDatabase) {
             funShare: row.funShare,
             nonFunFiles,
             pendingFunCandidates: row.pendingFunCandidates,
+            isExcluded: Boolean(row.isExcluded),
             hasFiles: Boolean(row.hasFiles),
             lastAnalyzed: row.lastAnalyzed ?? "-",
             lastSearched: row.lastSearched ?? "-",
@@ -352,11 +358,12 @@ export function createRepositories(db: AppDatabase) {
              ),
              pending_candidates as (
                select
-                 media_item_id,
+                 rc.media_item_id,
                  count(*) as pendingFunCandidates
-               from release_candidates
-               where is_fun = 1
-               group by media_item_id
+               from release_candidates rc
+               left join media_item_overrides o on o.media_item_id = rc.media_item_id and o.is_excluded = 1
+               where rc.is_fun = 1 and o.media_item_id is null
+               group by rc.media_item_id
              ),
              first_file as (
                select
@@ -382,6 +389,7 @@ export function createRepositories(db: AppDatabase) {
                la.lastSearched,
                la.lastGrabbed,
                coalesce(pc.pendingFunCandidates, 0) as pendingFunCandidates,
+               case when ovr.media_item_id is not null then 1 else 0 end as isExcluded,
                ff.releaseGroup,
                coalesce(ff.isFun, 0) as isFun,
                coalesce(ff.sizeBytes, mi.total_size_bytes, 0) as sizeBytes,
@@ -391,6 +399,7 @@ export function createRepositories(db: AppDatabase) {
              left join last_activity la on la.media_item_id = mi.id
              left join pending_candidates pc on pc.media_item_id = mi.id
              left join first_file ff on ff.media_item_id = mi.id
+             left join media_item_overrides ovr on ovr.media_item_id = mi.id and ovr.is_excluded = 1
              where i.kind = 'radarr' and mi.kind = 'movie'
              order by mi.title collate nocase`,
           )
@@ -409,6 +418,7 @@ export function createRepositories(db: AppDatabase) {
           lastSearched: string | null;
           lastGrabbed: string | null;
           pendingFunCandidates: number;
+          isExcluded: 0 | 1;
           releaseGroup: string | null;
           isFun: 0 | 1;
           sizeBytes: number;
@@ -430,6 +440,7 @@ export function createRepositories(db: AppDatabase) {
             funShare: row.funShare,
             nonFunFiles,
             pendingFunCandidates: row.pendingFunCandidates,
+            isExcluded: Boolean(row.isExcluded),
             releaseGroup: row.releaseGroup,
             isFun: Boolean(row.isFun),
             lastAnalyzed: row.lastAnalyzed ?? "-",

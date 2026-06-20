@@ -70,6 +70,7 @@ function row(overrides: Partial<SonarrSeriesTableRow>): SonarrSeriesTableRow {
     monitored: true,
     nonFunFiles: 1,
     pendingFunCandidates: 0,
+    isExcluded: false,
     status: "searchable",
     title: "Example Series",
     titleSlug: "example-series",
