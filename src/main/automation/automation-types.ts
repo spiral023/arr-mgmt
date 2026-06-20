@@ -25,6 +25,7 @@ export type AutomationMediaFile = {
   episodeNumber: number | null;
   monitored: boolean;
   hasFile: boolean;
+  isExcluded: boolean;
   itemFunShare: number;
   lastAnalyzedAt: string | null;
   lastSearchedAt: string | null;

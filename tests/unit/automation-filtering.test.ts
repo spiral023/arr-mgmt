@@ -124,6 +124,20 @@ describe("matchesAutomationFilters", () => {
       ),
     ).toBe(false);
   });
+
+  it("excludes overridden media items regardless of other filters", () => {
+    const filters: AutomationGoalFilters = {
+      monitored: "either",
+      hasFile: "either",
+      qualityProfiles: [],
+      funShare: null,
+      analyzed: { mode: "any" },
+      searched: { mode: "any" },
+      grabbed: { mode: "any" },
+    };
+    expect(matchesAutomationFilters(mediaFile({ isExcluded: true }), filters, now)).toBe(false);
+    expect(matchesAutomationFilters(mediaFile({ isExcluded: false }), filters, now)).toBe(true);
+  });
 });
 
 function mediaFile(overrides: Partial<AutomationMediaFile> = {}): AutomationMediaFile {
@@ -144,6 +158,7 @@ function mediaFile(overrides: Partial<AutomationMediaFile> = {}): AutomationMedi
     episodeNumber: 1,
     monitored: true,
     hasFile: true,
+    isExcluded: false,
     itemFunShare: 0.5,
     lastAnalyzedAt: "2026-06-17T12:00:00.000Z",
     lastSearchedAt: "2026-06-01T12:00:00.000Z",

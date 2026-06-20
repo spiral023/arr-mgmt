@@ -580,6 +580,7 @@ export function createRepositories(db: AppDatabase) {
                mf.episode_number as episodeNumber,
                mi.monitored,
                mi.has_file as hasFile,
+               case when ovr.media_item_id is not null then 1 else 0 end as isExcluded,
                mi.fun_share as itemFunShare,
                mi.last_analyzed_at as lastAnalyzedAt,
                mi.quality_profile_name as qualityProfileName,
@@ -591,6 +592,7 @@ export function createRepositories(db: AppDatabase) {
              left join last_activity la on la.instance_id = i.id
                and la.media_item_id = mi.id
                and la.child_arr_id = coalesce(mf.child_arr_id, mi.arr_id)
+             left join media_item_overrides ovr on ovr.media_item_id = mi.id and ovr.is_excluded = 1
              where (? = 'both' or i.kind = ?)
              order by lower(coalesce(mi.sort_title, mi.title)), mf.season_number, mf.episode_number, mf.id`,
           )
@@ -1746,6 +1748,7 @@ type AutomationMediaFileView = {
   episodeNumber: number | null;
   monitored: boolean;
   hasFile: boolean;
+  isExcluded: boolean;
   itemFunShare: number;
   lastAnalyzedAt: string | null;
   lastSearchedAt: string | null;
@@ -1753,10 +1756,11 @@ type AutomationMediaFileView = {
   qualityProfileName: string | null;
 };
 
-type AutomationMediaFileRow = Omit<AutomationMediaFileView, "isFun" | "monitored" | "hasFile"> & {
+type AutomationMediaFileRow = Omit<AutomationMediaFileView, "isFun" | "monitored" | "hasFile" | "isExcluded"> & {
   isFun: 0 | 1;
   monitored: 0 | 1;
   hasFile: 0 | 1;
+  isExcluded: 0 | 1;
 };
 
 function formatAutomationMediaFileRow(row: AutomationMediaFileRow): AutomationMediaFileView {
@@ -1765,6 +1769,7 @@ function formatAutomationMediaFileRow(row: AutomationMediaFileRow): AutomationMe
     isFun: Boolean(row.isFun),
     monitored: Boolean(row.monitored),
     hasFile: Boolean(row.hasFile),
+    isExcluded: Boolean(row.isExcluded),
   };
 }
 

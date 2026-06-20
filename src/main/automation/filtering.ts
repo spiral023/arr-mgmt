@@ -9,6 +9,7 @@ export function matchesAutomationFilters(
   now = new Date(),
 ): boolean {
   return (
+    !file.isExcluded &&
     matchesTriState(file.monitored, filters.monitored) &&
     matchesTriState(file.hasFile, filters.hasFile) &&
     matchesQualityProfile(file.qualityProfileName, filters.qualityProfiles) &&
