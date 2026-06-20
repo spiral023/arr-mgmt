@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { MediaItemAnalysis } from "../../src/main/arr/arr-types";
 import { createInMemoryDatabase } from "../../src/main/db/client";
 import { migrateDatabase } from "../../src/main/db/migrations";
 import { createRepositories } from "../../src/main/db/repositories";
@@ -77,5 +78,79 @@ describe("pending FuN queries with overrides", () => {
     expect(radarrRows[0].isExcluded).toBe(false);
     expect(radarrRows[0].pendingFunCandidates).toBe(1);
     expect(repos.mediaItems.summary().radarrPendingFunCandidates).toBe(1);
+  });
+});
+
+function setupExcludedSeriesWithCandidate() {
+  const db = createInMemoryDatabase();
+  migrateDatabase(db);
+  const repos = createRepositories(db);
+  const instanceId = repos.instances.upsert({
+    kind: "sonarr",
+    name: "Sonarr",
+    baseUrl: "http://sonarr.local:8989",
+    apiKeyEncrypted: "encrypted",
+    enabled: true,
+    now: new Date("2026-06-19T20:00:00.000Z"),
+  });
+  const mediaItemId = repos.mediaItems.upsertAnalysis(instanceId, {
+    arrId: 501,
+    kind: "series",
+    title: "Example Series",
+    titleSlug: "example-series",
+    monitored: true,
+    hasFile: true,
+    totalChildren: 1,
+    childrenWithFile: 1,
+    funChildren: 0,
+    nonFunChildren: 1,
+    totalSizeBytes: 2000,
+    funSizeBytes: 0,
+    funShare: 0,
+    lastAnalyzedAt: "2026-06-19T20:00:00.000Z",
+    files: [
+      { arrFileId: 5001, childArrId: 601, isFun: false, path: "/tv/example/s01e01.mkv", releaseGroup: "WvF", qualityName: "WEBDL-1080p", seasonNumber: 1, episodeNumber: 1, sizeBytes: 2000 },
+    ],
+  });
+  // Candidate inserted BEFORE exclusion so the count query (not just the cleanup) is exercised.
+  repos.releaseCandidates.insert({
+    instanceId,
+    mediaItemId,
+    childArrId: 601,
+    release: { guid: "c1", title: "Example.Series.S01E01.FuN", releaseGroup: "FuN" },
+    foundAt: new Date("2026-06-19T20:05:00.000Z"),
+  });
+  return { db, repos, mediaItemId };
+}
+
+describe("pending FuN queries with overrides (Sonarr)", () => {
+  it("flags excluded series and drops them from pending counts", () => {
+    const { repos, mediaItemId } = setupExcludedSeriesWithCandidate();
+
+    // Re-insert a candidate AFTER marking excluded via raw row, bypassing cleanup,
+    // to prove the count query itself filters excluded items.
+    repos.mediaItemOverrides.setExcluded({ kind: "series", arrId: 501, excluded: true, now: new Date("2026-06-19T21:00:00.000Z") });
+    repos.releaseCandidates.insert({
+      instanceId: 1,
+      mediaItemId,
+      childArrId: 601,
+      release: { guid: "c2", title: "Example.Series.S01E01.FuN.PROPER", releaseGroup: "FuN" },
+      foundAt: new Date("2026-06-19T21:05:00.000Z"),
+    });
+
+    const sonarrRows = repos.mediaItems.listSonarrRows();
+    expect(sonarrRows[0].isExcluded).toBe(true);
+    expect(sonarrRows[0].pendingFunCandidates).toBe(0);
+
+    const summary = repos.mediaItems.summary();
+    expect(summary.sonarrPendingFunCandidates).toBe(0);
+  });
+
+  it("leaves non-excluded series unaffected", () => {
+    const { repos } = setupExcludedSeriesWithCandidate();
+    const sonarrRows = repos.mediaItems.listSonarrRows();
+    expect(sonarrRows[0].isExcluded).toBe(false);
+    expect(sonarrRows[0].pendingFunCandidates).toBe(1);
+    expect(repos.mediaItems.summary().sonarrPendingFunCandidates).toBe(1);
   });
 });
