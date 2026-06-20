@@ -122,7 +122,6 @@ export function createRepositories(db: AppDatabase) {
           .prepare("select id from media_items where instance_id = ? and kind = ? and arr_id = ?")
           .get(instanceId, item.kind, item.arrId) as { id: number };
 
-        db.prepare("delete from media_files where media_item_id = ?").run(mediaItem.id);
         const insertFile = db.prepare(
           `insert into media_files (
              media_item_id,
@@ -140,34 +139,40 @@ export function createRepositories(db: AppDatabase) {
            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
 
-        for (const file of item.files) {
-          insertFile.run(
-            mediaItem.id,
-            file.arrFileId ?? null,
-            file.childArrId,
-            file.seasonNumber ?? null,
-            file.episodeNumber ?? null,
-            file.path ?? null,
-            file.relativePath ?? null,
-            file.releaseGroup,
-            file.isFun ? 1 : 0,
-            file.qualityName ?? null,
-            file.sizeBytes,
-            null,
-          );
-        }
+        const applyFileChanges = db.transaction(() => {
+          db.prepare("delete from media_files where media_item_id = ?").run(mediaItem.id);
 
-        // Any child (movie or episode) that now has a FuN file has reached its
-        // target — drop stale FuN candidates so it is no longer counted as
-        // "Pending FuN*" nor picked up by a grab run.
-        db.prepare(
-          `delete from release_candidates
-           where media_item_id = ?
-             and child_arr_id in (
-               select child_arr_id from media_files
-               where media_item_id = ? and is_fun = 1
-             )`,
-        ).run(mediaItem.id, mediaItem.id);
+          for (const file of item.files) {
+            insertFile.run(
+              mediaItem.id,
+              file.arrFileId ?? null,
+              file.childArrId,
+              file.seasonNumber ?? null,
+              file.episodeNumber ?? null,
+              file.path ?? null,
+              file.relativePath ?? null,
+              file.releaseGroup,
+              file.isFun ? 1 : 0,
+              file.qualityName ?? null,
+              file.sizeBytes,
+              null,
+            );
+          }
+
+          // Any child (movie or episode) that now has a FuN file has reached its
+          // target — drop stale FuN candidates so it is no longer counted as
+          // "Pending FuN*" nor picked up by a grab run.
+          db.prepare(
+            `delete from release_candidates
+             where media_item_id = ?
+               and child_arr_id in (
+                 select child_arr_id from media_files
+                 where media_item_id = ? and is_fun = 1
+               )`,
+          ).run(mediaItem.id, mediaItem.id);
+        });
+
+        applyFileChanges();
 
         return mediaItem.id;
       },
