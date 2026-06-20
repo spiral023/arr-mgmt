@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ColumnDef, ColumnFiltersState, Row } from "@tanstack/react-table";
-import { ExternalLink, Eye, Play, Radar, Search, Zap } from "lucide-react";
+import { Ban, ExternalLink, Eye, Play, Radar, Search, ShieldOff, Zap } from "lucide-react";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { MediaDetailLists } from "../components/MediaDetailLists";
@@ -39,6 +39,7 @@ export function RadarrMoviesView({
   onOpenInRadarr,
   onRunPipeline,
   onSearch,
+  onSetOverride,
   quota,
   rows: liveRows,
   statusMessage = "Ready",
@@ -50,11 +51,13 @@ export function RadarrMoviesView({
   onOpenInRadarr?: (movieId: number) => void;
   onRunPipeline?: (movieIds?: number[]) => void;
   onSearch?: (movieIds: number[]) => void;
+  onSetOverride?: (arrId: number, excluded: boolean) => void;
   quota?: QuotaSummary;
   rows?: RadarrMovieTableRow[];
   statusMessage?: string;
 }) {
   const [detailsRow, setDetailsRow] = useState<RadarrMovieTableRow | null>(null);
+  const [hideOverrides, setHideOverrides] = useState(false);
   const { details, loading: detailsLoading } = useItemDetails("movie", detailsRow?.arrId ?? null, onLoadDetails);
   const tableState = usePersistedTableState("arr-ops.table.radarr", {
     sorting: [{ id: "nonFunFiles", desc: true }],
@@ -66,13 +69,16 @@ export function RadarrMoviesView({
   );
   const filterControls = useMemo(
     () => (
-      <RadarrFilters
-        columnFilters={tableState.state.columnFilters}
-        onColumnFiltersChange={tableState.setColumnFilters}
-        qualityProfileNames={qualityProfileNames}
-      />
+      <>
+        <RadarrFilters
+          columnFilters={tableState.state.columnFilters}
+          onColumnFiltersChange={tableState.setColumnFilters}
+          qualityProfileNames={qualityProfileNames}
+        />
+        <FilterChip active={hideOverrides} label={hideOverrides ? "Overrides hidden" : "Hide overrides"} onClick={() => setHideOverrides((value) => !value)} />
+      </>
     ),
-    [tableState, qualityProfileNames],
+    [tableState, qualityProfileNames, hideOverrides],
   );
 
   const columns = useMemo<Array<ColumnDef<RadarrMovieTableRow, unknown>>>(
@@ -188,10 +194,31 @@ export function RadarrMoviesView({
         size: 128,
       },
       {
+        accessorKey: "isExcluded",
+        cell: ({ getValue }) =>
+          getValue<boolean>() ? (
+            <span className="inline-flex h-[22px] items-center justify-center rounded-md border border-signal-amber/25 bg-signal-amber/[0.10] px-1.5 text-[12px] font-semibold text-signal-amber">
+              Override
+            </span>
+          ) : (
+            <span className="font-mono text-[13px] tabular-nums text-ink-600">—</span>
+          ),
+        filterFn: booleanFilter,
+        header: "Override",
+        size: 104,
+      },
+      {
         cell: ({ row }) => (
           <div className="flex justify-end gap-1">
             <IconButton className="px-2" icon={Eye} label={`Open details for ${row.original.title}`} onClick={() => setDetailsRow(row.original)} />
             <IconButton className="px-2" icon={ExternalLink} label={`Open ${row.original.title} in Radarr`} onClick={() => onOpenInRadarr?.(row.original.arrId)} />
+            <IconButton
+              className="px-2"
+              icon={row.original.isExcluded ? ShieldOff : Ban}
+              label={row.original.isExcluded ? `Re-include ${row.original.title}` : `Exclude ${row.original.title} from grabbing`}
+              onClick={() => onSetOverride?.(row.original.arrId, !row.original.isExcluded)}
+              tone={row.original.isExcluded ? "warning" : "default"}
+            />
           </div>
         ),
         enableHiding: false,
@@ -199,11 +226,13 @@ export function RadarrMoviesView({
         header: "Actions",
         id: "actions",
         meta: { align: "right" },
-        size: 104,
+        size: 136,
       },
     ],
-    [onOpenInRadarr],
+    [onOpenInRadarr, onSetOverride],
   );
+
+  const visibleRows = hideOverrides ? rows.filter((row) => !row.isExcluded) : rows;
 
   return (
     <div className="flex flex-col gap-4">
@@ -234,6 +263,13 @@ export function RadarrMoviesView({
             <IconButton icon={Zap} label="Grab selected pending Radarr FuN releases" onClick={() => onGrab?.(selectedRows.map((row) => row.original.arrId))} tone="warning">
               Grab selected
             </IconButton>
+            <IconButton
+              icon={Ban}
+              label="Exclude selected Radarr movies from grabbing"
+              onClick={() => selectedRows.forEach((row) => onSetOverride?.(row.original.arrId, true))}
+            >
+              Exclude selected
+            </IconButton>
             <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-white/[0.08]" />
             <IconButton
               icon={Play}
@@ -247,7 +283,7 @@ export function RadarrMoviesView({
         )}
         columnFilters={tableState.state.columnFilters}
         columns={columns}
-        data={rows}
+        data={visibleRows}
         description="Movie-level FuN* coverage, candidate discovery, and selected-only operations."
         enableColumnVisibility
         filters={filterControls}

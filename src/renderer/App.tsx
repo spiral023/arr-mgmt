@@ -23,6 +23,7 @@ import {
   saveInstance,
   searchRadarrMovies,
   searchSonarrSeries,
+  setMediaOverride,
   subscribeToJobEvents,
 } from "./state/ipc-client";
 import { shouldRefreshRadarrRows, shouldRefreshSonarrRows } from "./state/refresh-policy";
@@ -209,6 +210,24 @@ export function App() {
     }
   }
 
+  async function runSetOverride(kind: "series" | "movie", arrId: number, excluded: boolean) {
+    try {
+      await setMediaOverride({ kind, arrId, excluded });
+      if (kind === "movie") {
+        await refreshRadarrRows();
+      } else {
+        await refreshSonarrRows();
+      }
+      void refreshKpis();
+    } catch (error) {
+      if (kind === "movie") {
+        setRadarrStatus(error instanceof Error ? error.message : String(error));
+      } else {
+        setSonarrStatus(error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+
   async function runSonarrPipeline(seriesIds?: number[]) {
     setSonarrStatus(
       seriesIds && seriesIds.length > 0
@@ -296,6 +315,7 @@ export function App() {
           onOpenInSonarr={(seriesId, titleSlug) => void runOpenSonarrSeries(seriesId, titleSlug)}
           onRunPipeline={(seriesIds) => void runSonarrPipeline(seriesIds)}
           onSearch={(seriesIds) => void runSonarrSearch(seriesIds)}
+          onSetOverride={(arrId, excluded) => void runSetOverride("series", arrId, excluded)}
           quota={quota}
           rows={sonarrRows}
           statusMessage={sonarrStatus}
@@ -310,6 +330,7 @@ export function App() {
           onOpenInRadarr={(movieId) => void runOpenRadarrMovie(movieId)}
           onRunPipeline={(movieIds) => void runRadarrPipeline(movieIds)}
           onSearch={(movieIds) => void runRadarrSearch(movieIds)}
+          onSetOverride={(arrId, excluded) => void runSetOverride("movie", arrId, excluded)}
           quota={quota}
           rows={radarrRows}
           statusMessage={radarrStatus}

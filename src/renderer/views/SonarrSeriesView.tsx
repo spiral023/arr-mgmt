@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ColumnDef, ColumnFiltersState, Row } from "@tanstack/react-table";
-import { ExternalLink, Eye, Play, Radar, Search, Zap } from "lucide-react";
+import { Ban, ExternalLink, Eye, Play, Radar, Search, ShieldOff, Zap } from "lucide-react";
 import { clsx } from "clsx";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
@@ -30,6 +30,7 @@ export function SonarrSeriesView({
   onOpenInSonarr,
   onRunPipeline,
   onSearch,
+  onSetOverride,
   quota,
   rows: liveRows,
   statusMessage = "Ready",
@@ -41,11 +42,13 @@ export function SonarrSeriesView({
   onOpenInSonarr?: (seriesId: number, titleSlug?: string) => void;
   onRunPipeline?: (seriesIds?: number[]) => void;
   onSearch?: (seriesIds: number[]) => void;
+  onSetOverride?: (arrId: number, excluded: boolean) => void;
   quota?: QuotaSummary;
   rows?: SonarrSeriesTableRow[];
   statusMessage?: string;
 }) {
   const [detailsRow, setDetailsRow] = useState<SonarrSeriesRow | null>(null);
+  const [hideOverrides, setHideOverrides] = useState(false);
   const { details, loading: detailsLoading } = useItemDetails("series", detailsRow?.arrId ?? null, onLoadDetails);
   const tableState = usePersistedTableState("arr-ops.table.sonarr", {
     sorting: [{ id: "nonFunFiles", desc: true }],
@@ -57,13 +60,16 @@ export function SonarrSeriesView({
   );
   const filterControls = useMemo(
     () => (
-      <SonarrFilters
-        columnFilters={tableState.state.columnFilters}
-        onColumnFiltersChange={tableState.setColumnFilters}
-        qualityProfileNames={qualityProfileNames}
-      />
+      <>
+        <SonarrFilters
+          columnFilters={tableState.state.columnFilters}
+          onColumnFiltersChange={tableState.setColumnFilters}
+          qualityProfileNames={qualityProfileNames}
+        />
+        <FilterChip active={hideOverrides} label={hideOverrides ? "Overrides hidden" : "Hide overrides"} onClick={() => setHideOverrides((value) => !value)} />
+      </>
     ),
-    [tableState, qualityProfileNames],
+    [tableState, qualityProfileNames, hideOverrides],
   );
 
   const columns = useMemo<Array<ColumnDef<SonarrSeriesRow, unknown>>>(
@@ -182,6 +188,20 @@ export function SonarrSeriesView({
         size: 128,
       },
       {
+        accessorKey: "isExcluded",
+        cell: ({ getValue }) =>
+          getValue<boolean>() ? (
+            <span className="inline-flex h-[22px] items-center justify-center rounded-md border border-signal-amber/25 bg-signal-amber/[0.10] px-1.5 text-[12px] font-semibold text-signal-amber">
+              Override
+            </span>
+          ) : (
+            <span className="font-mono text-[13px] tabular-nums text-ink-600">—</span>
+          ),
+        filterFn: booleanFilter,
+        header: "Override",
+        size: 104,
+      },
+      {
         cell: ({ row }) => (
           <div className="flex justify-end gap-1">
             <IconButton className="px-2" icon={Eye} label={`Open details for ${row.original.title}`} onClick={() => setDetailsRow(row.original)} />
@@ -191,6 +211,13 @@ export function SonarrSeriesView({
               label={`Open ${row.original.title} in Sonarr`}
               onClick={() => onOpenInSonarr?.(row.original.arrId, row.original.titleSlug)}
             />
+            <IconButton
+              className="px-2"
+              icon={row.original.isExcluded ? ShieldOff : Ban}
+              label={row.original.isExcluded ? `Re-include ${row.original.title}` : `Exclude ${row.original.title} from grabbing`}
+              onClick={() => onSetOverride?.(row.original.arrId, !row.original.isExcluded)}
+              tone={row.original.isExcluded ? "warning" : "default"}
+            />
           </div>
         ),
         enableHiding: false,
@@ -198,11 +225,13 @@ export function SonarrSeriesView({
         header: "Actions",
         id: "actions",
         meta: { align: "right" },
-        size: 104,
+        size: 136,
       },
     ],
-    [onOpenInSonarr],
+    [onOpenInSonarr, onSetOverride],
   );
+
+  const visibleRows = hideOverrides ? resolvedRows.filter((row) => !row.isExcluded) : resolvedRows;
 
   return (
     <div className="flex flex-col gap-4">
@@ -232,6 +261,13 @@ export function SonarrSeriesView({
             <IconButton icon={Zap} label="Grab selected pending FuN releases" onClick={() => onGrab?.(selectedRows.map((row) => row.original.arrId))} tone="warning">
               Grab selected
             </IconButton>
+            <IconButton
+              icon={Ban}
+              label="Exclude selected Sonarr series from grabbing"
+              onClick={() => selectedRows.forEach((row) => onSetOverride?.(row.original.arrId, true))}
+            >
+              Exclude selected
+            </IconButton>
             <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-white/[0.08]" />
             <IconButton
               icon={Play}
@@ -245,7 +281,7 @@ export function SonarrSeriesView({
         )}
         columnFilters={tableState.state.columnFilters}
         columns={columns}
-        data={resolvedRows}
+        data={visibleRows}
         description="Series-level coverage with pending FuN* candidates and selected-only search/grab controls."
         enableColumnVisibility
         filters={filterControls}
