@@ -628,6 +628,7 @@ export function createRepositories(db: AppDatabase) {
              values (?, ?, ?, ?, ?)
              on conflict(media_item_id) do update set
                is_excluded = excluded.is_excluded,
+               note = excluded.note,
                updated_at = excluded.updated_at`,
           ).run(item.id, input.excluded ? 1 : 0, input.note ?? null, now, now);
           if (input.excluded) {

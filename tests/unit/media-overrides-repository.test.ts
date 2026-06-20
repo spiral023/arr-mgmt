@@ -106,4 +106,17 @@ describe("mediaItemOverrides", () => {
     db.prepare("delete from media_items where id = ?").run(mediaItemId);
     expect(repos.mediaItemOverrides.excludedItemIds()).toEqual([]);
   });
+
+  it("updates the note when setExcluded is called again", () => {
+    const db = createInMemoryDatabase();
+    migrateDatabase(db);
+    const repos = createRepositories(db);
+    setupMovie(repos);
+
+    repos.mediaItemOverrides.setExcluded({ kind: "movie", arrId: 201, excluded: true, note: "reason A", now: new Date("2026-06-19T21:00:00.000Z") });
+    repos.mediaItemOverrides.setExcluded({ kind: "movie", arrId: 201, excluded: true, note: "reason B", now: new Date("2026-06-19T22:00:00.000Z") });
+
+    const row = db.prepare("select note from media_item_overrides where media_item_id = (select id from media_items where arr_id = 201)").get() as { note: string };
+    expect(row.note).toBe("reason B");
+  });
 });
