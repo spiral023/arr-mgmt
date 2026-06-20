@@ -1,4 +1,5 @@
 import { ipcMain, shell } from "electron";
+import { filterOutExcluded } from "./media-overrides";
 import { analyzeRadarrMovies, analyzeSonarrSeries } from "./arr/analysis-service";
 import { RadarrClient } from "./arr/radarr-client";
 import { selectSonarrSeriesForAnalysis } from "./arr/sonarr-analysis-plan";
@@ -692,6 +693,11 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
     return getNonFunEpisodeIds(episodes).map((episodeId) => ({ episodeId, mediaItemId, seriesId }));
   });
   const episodeTasks = seriesEpisodes.flat();
+  const excludedIds = new Set(state.repositories.mediaItemOverrides.excludedItemIds());
+  const allowedEpisodeTasks = filterOutExcluded(episodeTasks, excludedIds, (task) => task.mediaItemId);
+  if (allowedEpisodeTasks.length < episodeTasks.length) {
+    context.addEvent("info", `Skipping ${episodeTasks.length - allowedEpisodeTasks.length} episode(s) from excluded series`);
+  }
   let candidatesFound = 0;
   let searched = 0;
   let skippedByCooldown = 0;
@@ -701,10 +707,10 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
   let errors = 0;
   let detailLogged = 0;
 
-  context.setProgressTotal(episodeTasks.length);
-  context.addEvent("info", `Searching ${episodeTasks.length} non-FuN episodes with concurrency ${SEARCH_CONCURRENCY}`);
+  context.setProgressTotal(allowedEpisodeTasks.length);
+  context.addEvent("info", `Searching ${allowedEpisodeTasks.length} non-FuN episodes with concurrency ${SEARCH_CONCURRENCY}`);
 
-  await mapConcurrent(episodeTasks, SEARCH_CONCURRENCY, async (task) => {
+  await mapConcurrent(allowedEpisodeTasks, SEARCH_CONCURRENCY, async (task) => {
     context.throwIfCancelled();
     if (
       state.repositories.activityLog.hasRecentChildActivity({
@@ -1108,7 +1114,12 @@ async function grabSonarrCandidates(state: IpcState, input: SonarrSeriesActionIn
     "info",
     `Requested grab for ${input.seriesIds.length} Sonarr series: [${input.seriesIds.join(", ")}]`,
   );
-  const candidates = state.repositories.releaseCandidates.listForSeriesIds(input.seriesIds);
+  const excludedIds = new Set(state.repositories.mediaItemOverrides.excludedItemIds());
+  const candidates = filterOutExcluded(
+    state.repositories.releaseCandidates.listForSeriesIds(input.seriesIds),
+    excludedIds,
+    (candidate) => candidate.mediaItemId,
+  );
 
   context.setProgressTotal(candidates.length);
   if (candidates.length === 0) {
@@ -1149,6 +1160,11 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
     mediaItemId: state.repositories.mediaItems.findIdByArrId("movie", movieId, instanceId),
     movieId,
   }));
+  const excludedIds = new Set(state.repositories.mediaItemOverrides.excludedItemIds());
+  const allowedMovieTasks = filterOutExcluded(movieTasks, excludedIds, (task) => task.mediaItemId);
+  if (allowedMovieTasks.length < movieTasks.length) {
+    context.addEvent("info", `Skipping ${movieTasks.length - allowedMovieTasks.length} excluded movie(s)`);
+  }
   let candidatesFound = 0;
   let searched = 0;
   let skippedByCooldown = 0;
@@ -1158,10 +1174,10 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
   let errors = 0;
   let detailLogged = 0;
 
-  context.setProgressTotal(movieTasks.length);
-  context.addEvent("info", `Searching ${movieTasks.length} non-FuN Radarr movies with concurrency ${SEARCH_CONCURRENCY}`);
+  context.setProgressTotal(allowedMovieTasks.length);
+  context.addEvent("info", `Searching ${allowedMovieTasks.length} non-FuN Radarr movies with concurrency ${SEARCH_CONCURRENCY}`);
 
-  await mapConcurrent(movieTasks, SEARCH_CONCURRENCY, async (task) => {
+  await mapConcurrent(allowedMovieTasks, SEARCH_CONCURRENCY, async (task) => {
     context.throwIfCancelled();
     if (
       state.repositories.activityLog.hasRecentChildActivity({
@@ -1258,7 +1274,12 @@ async function grabRadarrCandidates(state: IpcState, input: RadarrMovieActionInp
     "info",
     `Requested grab for ${input.movieIds.length} Radarr movie(s): [${input.movieIds.join(", ")}]`,
   );
-  const candidates = state.repositories.releaseCandidates.listForMovieIds(input.movieIds);
+  const excludedIds = new Set(state.repositories.mediaItemOverrides.excludedItemIds());
+  const candidates = filterOutExcluded(
+    state.repositories.releaseCandidates.listForMovieIds(input.movieIds),
+    excludedIds,
+    (candidate) => candidate.mediaItemId,
+  );
 
   context.setProgressTotal(candidates.length);
   if (candidates.length === 0) {
