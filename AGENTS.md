@@ -2,6 +2,91 @@
 
 Hinweise für AI-Agenten, die in diesem Repo arbeiten.
 
+## CLI nutzen (bevorzugter Weg)
+
+Die App stellt eine Headless-CLI bereit, die **immer dann genutzt werden soll, wenn
+eine Lese- oder Aktions-Operation abgebildet werden kann** — also bei fast allen
+Diagnose-, Analyse- und Steuerungsaufgaben. Die CLI läuft in derselben Electron-Runtime
+wie die GUI und hat daher Zugriff auf verschlüsselte API-Keys.
+
+### Wann CLI, wann direkter DB-Zugriff?
+
+| Situation | Methode |
+| --- | --- |
+| Library-Überblick, Item-Details, Jobs, Quota, Stats | **CLI** |
+| Aktionen auslösen (analyze / search / grab / pipeline) | **CLI** |
+| Komplexe SQL-Joins, die kein CLI-Befehl abdeckt | **DB direkt** (siehe unten) |
+| Filterlogik debuggen (Pass/Fail-Counts) | **DB direkt** |
+
+### Aufruf (Development)
+
+```powershell
+# Erst bauen falls nötig:
+npm run build
+
+# CLI aufrufen — stdout ist immer gültiges UTF-8-JSON:
+$result = electron out/main/index.js --cli library summary | ConvertFrom-Json
+# oder kompakt (kein pretty-print):
+electron out/main/index.js --cli quota --quiet
+```
+
+**Wichtig (Windows):** Für Pipe-/Redirect-Capture (`> out.json`, `ConvertFrom-Json`)
+braucht es kein spezielles Encoding — die Bytes sind immer UTF-8. Interaktive
+PowerShell-Sessions ggf. einmalig mit
+`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` reparieren.
+
+### Ausgabeformat
+
+```
+Erfolg: {"ok":true,"hint":"…","data":…,"page":{…}}
+Fehler:  {"ok":false,"hint":"…","error":{"message":"…","code":"…"}}
+```
+
+`hint` enthält immer den empfohlenen nächsten Schritt — unbedingt lesen.
+Exit-Code `0` = ok, `1` = Fehler.
+
+### Verfügbare Befehle
+
+| Befehl | Wann nutzen |
+| --- | --- |
+| `library summary` | Ersten Überblick verschaffen |
+| `library sonarr\|radarr [--limit N] [--offset N] [--non-fun-only] [--full]` | Item-Liste (paginiert) |
+| `item series\|movie <arrId>` | Einzelnes Item im Detail |
+| `quota` | Such-/Grab-Kontingent prüfen |
+| `stats` | Verlaufsstatistik |
+| `activity [--limit N]` | Letzte Aktivitäten |
+| `jobs list \| status <id>` | Laufende/abgeschlossene Jobs |
+| `instances list \| test sonarr\|radarr` | Instanzen und Erreichbarkeit |
+| `analyze sonarr\|radarr\|all [--ids 1,2] [--sample N]` | Analyse anstoßen |
+| `search sonarr\|radarr --ids 1,2,3` | FuN-Suche für Items |
+| `grab sonarr\|radarr --ids 1,2,3` | Kandidaten grabben |
+| `pipeline sonarr\|radarr\|all [--ids 1,2]` | Analyse + Suche + Grab am Stück |
+| `automation list \| run <goalId>` | Automations-Goals |
+
+Globale Flags: `--pretty` (lesbares JSON), `--quiet` (kein stderr-Log),
+`--full` (vollständige Felder), `--limit N`, `--offset N`.
+
+### Typische Agenten-Workflows
+
+```powershell
+# 1. Überblick holen
+electron out/main/index.js --cli library summary --quiet
+
+# 2. Nicht-Fun-Items einer Instanz auflisten (IDs für folgende Aktionen)
+electron out/main/index.js --cli library sonarr --non-fun-only --limit 20 --quiet
+
+# 3. Analyse für bestimmte Items anstoßen
+electron out/main/index.js --cli analyze sonarr --ids 12,34,56 --quiet
+
+# 4. Kompletten Pipeline-Durchlauf
+electron out/main/index.js --cli pipeline all --quiet
+```
+
+Aktionen (`analyze`/`search`/`grab`/`pipeline`) laufen **synchron** und liefern
+Aggregatzahlen (`succeeded`/`failed`/`processed`/`total`) plus `status` zurück.
+
+---
+
 ## Datenbank zur Analyse abfragen (read-only)
 
 Für Diagnosen ("warum hat der Job X getan?", Filter-/Daten-Plausibilität) ist es am
