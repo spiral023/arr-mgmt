@@ -28,6 +28,31 @@ bestehenden Main-Module wiederverwenden**: `repositories`, `SonarrClient`/
 `RadarrClient`, `InstanceStore`, `SecretStore`, `JobRunner`, die Workflow-Helfer
 in `ipc.ts` und `createProductionAutomationRunner`. Die GUI muss **nicht** laufen.
 
+### Auslieferung: Dual-Mode in der portable .exe
+
+Es gibt **keine** separate CLI-Binary. Die bestehende portable `ARR Ops.exe`
+(`out/main/index.js` als Entry) erkennt beim Start, ob sie als CLI aufgerufen wird,
+und läuft dann headless als CLI statt die GUI zu starten. Eine .exe für beides,
+kein zweiter Electron-Build.
+
+- **CLI-Modus-Erkennung** in `src/main/index.ts`, ganz früh und **vor** dem
+  GUI-Bootstrap: CLI-Modus, wenn `process.argv` das Sentinel-Flag `--cli` enthält
+  **oder** das erste positionelle Argument ein bekanntes CLI-Verb ist
+  (`library`, `item`, `quota`, `stats`, `activity`, `jobs`, `instances`,
+  `analyze`, `search`, `grab`, `pipeline`, `automation`, `help`). Trifft keines zu
+  → unveränderter GUI-Bootstrap. Das verhindert Fehlauslösung bei Squirrel-/
+  Pfad-Argumenten gepackter Apps.
+- Im CLI-Modus wird die GUI-Initialisierung (`createAppShell`, Tray, persistierte
+  Schedules) **nicht** ausgeführt; stattdessen `runCli(process.argv)` aus `src/cli/`.
+- Eine .exe-große Electron-Runtime ist unvermeidbar (zwingend für `safeStorage`);
+  eine schlanke Standalone-Binary ist mit dieser Architektur nicht möglich.
+
+**Caveat Windows-Konsole:** Die Electron-.exe ist ein GUI-Programm und hängt sich
+nicht sauber an ein interaktives `cmd`-Fenster (Live-Ausgabe direkt im Terminal ist
+unzuverlässig). Für den realen Agenten-Aufruf — `spawn`/`exec` mit Pipe-Capture
+oder Umleitung in eine Datei (`> out.json`) — ist das Lesen von stdout zuverlässig.
+Die Doku weist explizit darauf hin.
+
 ### Ablauf pro Aufruf
 
 1. `app.whenReady()` abwarten (nötig für `safeStorage`).
@@ -49,8 +74,9 @@ in `ipc.ts` und `createProductionAutomationRunner`. Die GUI muss **nicht** laufe
 ### Verzeichnis & Build
 
 - Quellcode unter `src/cli/`:
-  - `src/cli/index.ts` — Electron-Entry: Bootstrap (Schritte 1–4), Arg-Parsing,
-    Dispatch, JSON-Ausgabe, Exit.
+  - `src/cli/run.ts` — CLI-Einstieg: Bootstrap (Schritte 1–4), Arg-Parsing,
+    Dispatch, JSON-Ausgabe, Exit. Exportiert `isCliInvocation(argv)` und
+    `runCli(argv)`.
   - `src/cli/commands.ts` — Befehls-Implementierungen (nehmen `IpcState` +
     geparste Argumente, liefern ein `CommandResult`).
   - `src/cli/output.ts` — Bau der stabilen JSON-Hülle (Erfolg/Fehler), Pagination,
@@ -58,13 +84,19 @@ in `ipc.ts` und `createProductionAutomationRunner`. Die GUI muss **nicht** laufe
   - `src/cli/args.ts` — dünner Wrapper um `util.parseArgs` (Verb/Subverb +
     Optionen, `--ids`-Parsing zu `number[]`).
   - `src/cli/README.md` — agenten-orientierte Doku.
-- `electron.vite.config.ts`: `main.build.rollupOptions.input` wird von einem
-  einzelnen Pfad auf ein Objekt erweitert:
-  `{ index: ".../src/main/index.ts", cli: ".../src/cli/index.ts" }`. Ergebnis:
-  zusätzlich `out/main/cli.js`.
-- `package.json`: Script `"cli": "electron out/main/cli.js"`. Aufruf durch Agenten:
-  `npm run cli -- <befehl> [optionen]` oder direkt `electron out/main/cli.js <befehl>`.
-  (Setzt einen vorherigen `npm run build` voraus.)
+- **Kein** zusätzlicher electron-vite-Entry. `src/main/index.ts` verzweigt früh per
+  `isCliInvocation(process.argv)` nach `runCli(...)` und überspringt sonst den
+  GUI-Bootstrap. Die `src/cli/`-Module werden über diesen Import in den bestehenden
+  `main`-Build (`out/main/index.js`) mit eingebunden. `electron.vite.config.ts`
+  bleibt unverändert.
+- `package.json`: bestehendes `"main": "out/main/index.js"` bleibt; die portable
+  .exe nutzt es für GUI **und** CLI. Zusätzliches Convenience-Script
+  `"cli": "electron out/main/index.js --cli"` für den Dev-Aufruf nach `npm run build`.
+- Aufruf durch Agenten:
+  - Entwicklung: `npm run cli -- <befehl> [optionen]` oder
+    `electron out/main/index.js --cli <befehl>`.
+  - Gepackt: `"ARR Ops.exe" --cli <befehl>` bzw. `"ARR Ops.exe" <verb> …`
+    (per `spawn`/Pipe oder Ausgabe-Umleitung, siehe Konsolen-Caveat).
 
 ### Wiederverwendung statt Duplizierung
 
@@ -190,10 +222,13 @@ dafür existiert der separate Live-Test-Pfad).
 
 Kurz und agenten-orientiert:
 
-- Aufrufschema (`npm run cli -- …` / `electron out/main/cli.js …`).
+- Aufrufschema: Entwicklung `npm run cli -- …` / `electron out/main/index.js --cli …`;
+  gepackt `"ARR Ops.exe" --cli …`.
 - Vollständige Befehlstabelle mit je einem Beispiel-Aufruf und gekürzter
   Beispiel-Ausgabe.
 - Erläuterung der JSON-Hülle, des `hint`-Feldes, der Pagination und der Exit-Codes.
+- Konsolen-Caveat (Windows): per `spawn`/Pipe oder Umleitung lesen, nicht auf
+  interaktive Live-Ausgabe verlassen.
 - Abschnitt „Für AI-Agenten": Ausgabe ist immer JSON auf stdout (Logs auf stderr),
   Listen sind paginiert/schlank, `--ids` werden über `library …` ermittelt,
   Aktionen sind synchron.
