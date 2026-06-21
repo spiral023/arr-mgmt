@@ -1,6 +1,13 @@
 import { app, safeStorage } from "electron";
 import { join } from "node:path";
 import { createAppShell } from "./app-shell";
+
+// In dev mode Electron falls back to "Electron" as the app name (no package.json
+// in the build output dir), which redirects userData to %APPDATA%\Electron instead
+// of %APPDATA%\arr-ops where the GUI stores its data. Fix this before any path lookup.
+if (!app.isPackaged) {
+  app.setName("arr-ops");
+}
 import { createAppDatabase } from "./db/client";
 import { migrateDatabase } from "./db/migrations";
 import { createRepositories } from "./db/repositories";
