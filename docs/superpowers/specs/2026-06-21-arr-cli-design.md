@@ -56,15 +56,17 @@ Die Doku weist explizit darauf hin.
 ### Ablauf pro Aufruf
 
 1. `app.whenReady()` abwarten (nötig für `safeStorage`).
-2. `app.setName("arr-ops")` **vor** der Pfadauflösung setzen, damit die CLI
-   denselben `userData`-Pfad — und damit dieselbe SQLite-Datei und dieselbe
-   `instances.json` — wie die GUI auflöst.
+2. **Kein** `app.setName(...)`: Da die CLI im Dual-Mode im selben Electron-Entry
+   wie die GUI läuft, liefert `app.getName()` automatisch denselben Namen — und
+   damit denselben `userData`-Pfad (dieselbe SQLite-Datei und `instances.json`) —
+   wie die GUI im jeweils selben Modus (Dev bzw. gepackt).
 3. DB öffnen (`createAppDatabase(join(app.getPath("userData"), "arr-ops.sqlite"))`),
    anschließend `db.pragma("busy_timeout = 5000")` setzen, damit ein paralleler
    Schreibzugriff durch die laufende GUI nicht sofort mit „database is locked"
-   fehlschlägt. `migrateDatabase(db)` wird **nicht** erneut aufgerufen (die GUI ist
-   die Migrationsquelle); die CLI erwartet ein bereits migriertes Schema und gibt
-   andernfalls einen klaren Fehler mit Hinweis aus.
+   fehlschlägt. Danach `migrateDatabase(db)` aufrufen — die Migration ist
+   **idempotent**, ist also unschädlich wenn die GUI das Schema bereits angelegt
+   hat, und ermöglicht zugleich CLI-Betrieb ohne je gestartete GUI (legt das
+   Schema bei Bedarf an).
 4. `InstanceStore` + `SecretStore(safeStorage)` + `repositories` + `JobRunner`
    (ohne `onChange`-Anbindung an ein Fenster) aufbauen → `IpcState`.
 5. Argumente mit `util.parseArgs` parsen, Befehl dispatchen.
@@ -198,7 +200,7 @@ Regeln:
 - Fehlender/ungültiger Befehl → `ok:false`, `code:"unknown_command"`, `hint` verweist auf `help`.
 - Fehlende Pflicht-Option (z.B. `--ids` bei `search`) → `code:"missing_argument"`.
 - Fehlender API-Key / nicht erreichbare Instanz → `code:"instance_error"`, Hinweis auf GUI-Einstellungen.
-- DB nicht gefunden / nicht migriert → `code:"db_unavailable"`, Hinweis, die GUI mindestens einmal zu starten.
+- DB-Verzeichnis nicht beschreibbar / Migration schlägt fehl → `code:"db_unavailable"`, Hinweis mit der Fehlermeldung.
 - Job endet mit `failed`/`blocked_by_budget` → `ok:true` mit aussagekräftigem `hint`
   (die Aktion lief, aber das Quota/ein Fehler hat sie begrenzt) und den Aggregatzahlen.
 - Unerwartete Exceptions → `code:"internal_error"`, Message gekürzt; voller Stack nach stderr.
