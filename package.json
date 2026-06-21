@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "serve:renderer": "vite src/renderer --host 127.0.0.1 --port 4173",
-    "start": "electron-vite preview"
+    "start": "electron-vite preview",
+    "cli": "electron out/main/index.js --cli"
   },
   "dependencies": {
     "@tanstack/react-table": "^8.21.3",
