@@ -48,7 +48,7 @@ function normalizeSettings(input: AppSettingsInput): AppSettings {
       ),
     },
     cooldownHours: {
-      episodeSearch: positiveInteger(input.cooldownHours?.episodeSearch, defaultAppSettings.cooldownHours.episodeSearch),
+      episodeSearch: nonNegativeInteger(input.cooldownHours?.episodeSearch, defaultAppSettings.cooldownHours.episodeSearch),
       movieSearch: positiveInteger(input.cooldownHours?.movieSearch, defaultAppSettings.cooldownHours.movieSearch),
     },
     fun: {
@@ -86,6 +86,10 @@ function normalizePrefixes(value: unknown): string[] {
 
 function positiveInteger(value: unknown, fallback: number): number {
   return Number.isInteger(value) && Number(value) > 0 ? Number(value) : fallback;
+}
+
+function nonNegativeInteger(value: unknown, fallback: number): number {
+  return Number.isInteger(value) && Number(value) >= 0 ? Number(value) : fallback;
 }
 
 function percentInteger(value: unknown, fallback: number): number {

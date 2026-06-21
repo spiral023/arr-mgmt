@@ -235,6 +235,7 @@ export function SettingsView() {
             <label>
               <Label>Episode search cooldown</Label>
               <select className={fieldClassName} onChange={(event) => setEpisodeCooldown(Number(event.target.value))} value={episodeCooldown}>
+                <option value="0">No cooldown</option>
                 <option value="6">6 hours</option>
                 <option value="12">12 hours</option>
                 <option value="24">24 hours</option>
