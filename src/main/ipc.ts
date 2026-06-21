@@ -418,7 +418,7 @@ function getAutomationRunner(state: IpcState): AutomationRunner {
   return state.automationRunner;
 }
 
-function enqueueSonarrAnalysis(state: IpcState, name = "Analyze Sonarr", seriesIds?: number[], sampleSize?: number) {
+export function enqueueSonarrAnalysis(state: IpcState, name = "Analyze Sonarr", seriesIds?: number[], sampleSize?: number) {
   return state.jobRunner.enqueue({
     name,
     kind: "analysis",
@@ -428,7 +428,7 @@ function enqueueSonarrAnalysis(state: IpcState, name = "Analyze Sonarr", seriesI
   });
 }
 
-function enqueueRadarrAnalysis(state: IpcState, name = "Analyze Radarr", movieIds?: number[], sampleSize?: number) {
+export function enqueueRadarrAnalysis(state: IpcState, name = "Analyze Radarr", movieIds?: number[], sampleSize?: number) {
   return state.jobRunner.enqueue({
     name,
     kind: "analysis",
@@ -438,7 +438,7 @@ function enqueueRadarrAnalysis(state: IpcState, name = "Analyze Radarr", movieId
   });
 }
 
-function enqueueSonarrSearch(state: IpcState, input: SonarrSeriesActionInput) {
+export function enqueueSonarrSearch(state: IpcState, input: SonarrSeriesActionInput) {
   return state.jobRunner.enqueue({
     name: "Search non-FuN Sonarr episodes",
     kind: "search",
@@ -448,7 +448,7 @@ function enqueueSonarrSearch(state: IpcState, input: SonarrSeriesActionInput) {
   });
 }
 
-function enqueueSonarrGrab(state: IpcState, input: SonarrSeriesActionInput) {
+export function enqueueSonarrGrab(state: IpcState, input: SonarrSeriesActionInput) {
   return state.jobRunner.enqueue({
     name: "Grab Sonarr FuN candidates",
     kind: "grab",
@@ -458,7 +458,7 @@ function enqueueSonarrGrab(state: IpcState, input: SonarrSeriesActionInput) {
   });
 }
 
-function enqueueRadarrSearch(state: IpcState, input: RadarrMovieActionInput) {
+export function enqueueRadarrSearch(state: IpcState, input: RadarrMovieActionInput) {
   return state.jobRunner.enqueue({
     name: "Search non-FuN Radarr movies",
     kind: "search",
@@ -468,7 +468,7 @@ function enqueueRadarrSearch(state: IpcState, input: RadarrMovieActionInput) {
   });
 }
 
-function enqueueRadarrGrab(state: IpcState, input: RadarrMovieActionInput) {
+export function enqueueRadarrGrab(state: IpcState, input: RadarrMovieActionInput) {
   return state.jobRunner.enqueue({
     name: "Grab Radarr FuN candidates",
     kind: "grab",
@@ -550,7 +550,7 @@ async function runCombinedWorkflow(
   }
 }
 
-function enqueueCombinedJob(
+export function enqueueCombinedJob(
   state: IpcState,
   jobTarget: "sonarr" | "radarr" | "all" | "selected",
   ids?: { seriesIds?: number[]; movieIds?: number[] },
@@ -1305,7 +1305,7 @@ async function grabRadarrCandidates(state: IpcState, input: RadarrMovieActionInp
   });
 }
 
-function getQuotaSummary(state: IpcState): QuotaSummary {
+export function getQuotaSummary(state: IpcState): QuotaSummary {
   const settings = getAppSettings(state.repositories);
   const now = new Date();
   const searchUsed = state.repositories.activityLog.countSince("search", now, settings.quota.windowHours);
@@ -1773,7 +1773,7 @@ function formatDateTime(value: string | undefined): string {
   return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-function formatSonarrRowDates(row: ReturnType<IpcState["repositories"]["mediaItems"]["listSonarrRows"]>[number]) {
+export function formatSonarrRowDates(row: ReturnType<IpcState["repositories"]["mediaItems"]["listSonarrRows"]>[number]) {
   return {
     ...row,
     lastAnalyzed: formatDateTime(row.lastAnalyzed),
@@ -1782,7 +1782,7 @@ function formatSonarrRowDates(row: ReturnType<IpcState["repositories"]["mediaIte
   };
 }
 
-function formatRadarrRowDates(row: ReturnType<IpcState["repositories"]["mediaItems"]["listRadarrRows"]>[number]) {
+export function formatRadarrRowDates(row: ReturnType<IpcState["repositories"]["mediaItems"]["listRadarrRows"]>[number]) {
   return {
     ...row,
     lastAnalyzed: formatDateTime(row.lastAnalyzed),
@@ -1791,7 +1791,7 @@ function formatRadarrRowDates(row: ReturnType<IpcState["repositories"]["mediaIte
   };
 }
 
-function formatActivityRow(row: ActivityRowView): ActivityRowView {
+export function formatActivityRow(row: ActivityRowView): ActivityRowView {
   return {
     ...row,
     app: row.app === "sonarr" ? "Sonarr" : row.app === "radarr" ? "Radarr" : "External",
