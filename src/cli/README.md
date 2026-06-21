@@ -10,9 +10,10 @@ Logs/Job-Events laufen auf **stderr**.
   oder `electron out/main/index.js --cli <verb> ...`
 - Gepackt: `"ARR Ops.exe" --cli <verb> ...`
 
-**Windows-Konsole:** Die .exe ist ein GUI-Programm. Für zuverlässige Ausgabe per
-`spawn`/`exec` mit Pipe-Capture lesen oder in eine Datei umleiten (`> out.json`);
-auf interaktive Live-Ausgabe im Terminal nicht verlassen.
+**Windows-Konsole:** stdout-Redirect und Pipe-Capture (`> out.json`, `spawn` + stdout-Buffer)
+sind zuverlässig — die Bytes sind immer gültiges UTF-8. Interaktive PowerShell-Sessions
+brauchen `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` (einmalig im Profil),
+sonst erscheinen Umlaute als Mojibake (cp850-Darstellung von UTF-8-Bytes).
 
 ## Ausgabeformat
 
@@ -37,6 +38,7 @@ Exit-Code: `0` = ok, `1` = Fehler. `hint` ist immer ein kurzer nächster-Schritt
 | `grab sonarr\|radarr --ids 1,2,3` | Kandidaten grabben |
 | `pipeline sonarr\|radarr\|all [--ids 1,2]` | Analyse+Suche+Grab |
 | `automation list \| run <goalId>` | Automations-Goals |
+| `help` | Befehlsübersicht |
 
 Globale Flags: `--pretty`, `--quiet`, `--full`, `--limit N`, `--offset N`.
 

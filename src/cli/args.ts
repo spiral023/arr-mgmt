@@ -60,6 +60,7 @@ export function parseCliArgs(userArgs: string[]): ParsedArgs {
     allowPositionals: true,
     options: {
       cli: { type: "boolean" },
+      help: { type: "boolean" },
       ids: { type: "string" },
       limit: { type: "string" },
       offset: { type: "string" },
@@ -72,7 +73,7 @@ export function parseCliArgs(userArgs: string[]): ParsedArgs {
   });
 
   return {
-    verb: positionals[0] ?? "help",
+    verb: values.help ? "help" : (positionals[0] ?? "help"),
     sub: positionals[1],
     rest: positionals.slice(2),
     ids: parseIds(values.ids as string | undefined),
