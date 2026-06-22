@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { createAppDatabase } from "../main/db/client";
 import { migrateDatabase } from "../main/db/migrations";
 import { createRepositories } from "../main/db/repositories";
-import { InstanceStore } from "../main/instances/instance-store";
 import { createNotificationAdapter } from "../main/notifications";
 import { JobRunner } from "../main/scheduler/job-runner";
 import { Scheduler } from "../main/scheduler/scheduler";
@@ -11,6 +10,7 @@ import { createSecretStore } from "../main/secrets/secret-store";
 import type { IpcState } from "../main/ipc";
 import { isCliInvocation, parseCliArgs } from "./args";
 import { runCommand } from "./commands";
+import { CliInstanceStore, loadDevEnvInstanceOverrides } from "./env-instances";
 import { fail, render, type CommandResult } from "./output";
 
 export { isCliInvocation };
@@ -28,7 +28,9 @@ export async function runCli(userArgs: string[]): Promise<void> {
     db.pragma("busy_timeout = 5000");
     migrateDatabase(db);
     const repositories = createRepositories(db);
-    const instanceStore = new InstanceStore(join(userData, "instances.json"), createSecretStore(safeStorage));
+    const instanceStore = new CliInstanceStore(join(userData, "instances.json"), createSecretStore(safeStorage), {
+      overrides: loadDevEnvInstanceOverrides({ isPackaged: app.isPackaged }),
+    });
     const jobRunner = new JobRunner(createNotificationAdapter(), {
       persistence: repositories.jobs,
       onChange: args.quiet

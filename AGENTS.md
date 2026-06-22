@@ -30,6 +30,18 @@ $result = electron out/main/index.cjs --cli library summary | ConvertFrom-Json
 electron out/main/index.cjs --cli quota --quiet
 ```
 
+Im Development liest die CLI optional `SONARR_URL`/`SONARR_API_KEY` und
+`RADARR_URL`/`RADARR_API_KEY` aus `.env` bzw. der Prozess-Umgebung. Diese Werte
+übersteuern nur die CLI-Laufzeit und werden nicht gespeichert. In gepackten Builds
+wird `.env` ignoriert; dort nutzt die CLI die in der GUI gespeicherten,
+verschlüsselten Verbindungsdaten. `instances list` zeigt pro Instanz `source: "env"`
+oder `source: "gui"`.
+
+Wenn die Development-CLI mit einem `NODE_MODULE_VERSION`-Fehler für `better-sqlite3`
+startet, wurde das native Modul zuletzt für System-Node gebaut. Dann einmal
+`npx electron-rebuild -f -w better-sqlite3` ausführen. Für Vitest stellt
+`npm rebuild better-sqlite3` das Modul wieder auf System-Node zurück.
+
 ### Aufruf (gepackte App / Agenten)
 
 Für gebaute Windows-Artefakte bevorzugt die Companion-CLI verwenden:

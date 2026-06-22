@@ -11,6 +11,17 @@ Logs/Job-Events laufen auf **stderr**.
 - Gepackt fuer AI-Agenten: `release\win-unpacked\arr-cli.exe <verb> ...`
 - Direkte App-Exe: `release\win-unpacked\ARR Ops.exe --cli <verb> ...`
 
+In Development liest die CLI, wenn vorhanden, `SONARR_URL`/`SONARR_API_KEY` und
+`RADARR_URL`/`RADARR_API_KEY` aus `.env` bzw. der Prozess-Umgebung. Diese Werte
+uebersteuern nur die CLI-Laufzeit und werden nicht gespeichert. In gepackten Builds
+wird `.env` ignoriert; dort nutzt die CLI die in der GUI gespeicherten, per
+Electron `safeStorage` verschluesselten Verbindungsdaten.
+
+Wenn die Development-CLI mit einem `NODE_MODULE_VERSION`-Fehler fuer
+`better-sqlite3` startet, wurde das native Modul zuletzt fuer System-Node gebaut.
+Dann einmal `npx electron-rebuild -f -w better-sqlite3` ausfuehren. Fuer Vitest
+stellt `npm rebuild better-sqlite3` das Modul wieder auf System-Node zurueck.
+
 `release\ARR Ops 0.1.0.exe` ist der portable GUI-Wrapper von electron-builder und
 nicht fuer stdout-basierte Agenten-CLI-Aufrufe gedacht. `arr-cli.exe` muss im selben
 Ordner wie `ARR Ops.exe` liegen; der Wrapper startet die App im CLI-Modus, entfernt
@@ -50,6 +61,9 @@ Exit-Code: `0` = ok, `1` = Fehler. `hint` ist immer ein kurzer nächster-Schritt
 
 Globale Flags: `--pretty`, `--quiet`, `--full`, `--limit N`, `--offset N`.
 Spezialflag: `missing radarr --grab`.
+
+`instances list` liefert pro Eintrag ein `source`-Feld: `env` bedeutet Development-
+Override aus `.env`/Umgebung, `gui` bedeutet gespeicherte GUI-Konfiguration.
 
 ## Beispiel
 
