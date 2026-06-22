@@ -15,8 +15,7 @@
     "test:e2e": "playwright test",
     "serve:renderer": "vite src/renderer --host 127.0.0.1 --port 4173",
     "start": "electron-vite preview",
-    "cli": "electron out/main/index.cjs --cli",
-    "postinstall": "patch-package"
+    "cli": "electron out/main/index.cjs --cli"
   },
   "dependencies": {
     "@tanstack/react-table": "^8.21.3",
@@ -44,7 +43,6 @@
     "electron-builder": "^26.15.3",
     "electron-vite": "^3.1.0",
     "happy-dom": "^20.10.6",
-    "patch-package": "^8.0.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3",
