@@ -25,10 +25,30 @@ wie die GUI und hat daher Zugriff auf verschlüsselte API-Keys.
 npm run build
 
 # CLI aufrufen — stdout ist immer gültiges UTF-8-JSON:
-$result = electron out/main/index.js --cli library summary | ConvertFrom-Json
+$result = electron out/main/index.cjs --cli library summary | ConvertFrom-Json
 # oder kompakt (kein pretty-print):
-electron out/main/index.js --cli quota --quiet
+electron out/main/index.cjs --cli quota --quiet
 ```
+
+### Aufruf (gepackte App / Agenten)
+
+Für gebaute Windows-Artefakte bevorzugt die Companion-CLI verwenden:
+
+```powershell
+release\win-unpacked\arr-cli.exe library summary --quiet
+release\win-unpacked\arr-cli.exe library radarr --limit 20 --quiet
+```
+
+`arr-cli.exe` liegt neben `release\win-unpacked\ARR Ops.exe`, startet die App im
+CLI-Modus, entfernt `ELECTRON_RUN_AS_NODE` für den Kindprozess und reicht
+stdout/stderr/Exit-Code unverändert durch. Die portable Einzeldatei
+`release\ARR Ops 0.1.0.exe` ist der GUI-Wrapper und nicht für stdout-basierte
+Agenten-CLI-Aufrufe gedacht.
+
+**Build-Voraussetzung:** `npm run dist:win` baut über `npm run build:cli-wrapper`
+auch die Companion-CLI und benötigt dafür das **.NET 8 SDK** (`dotnet` im PATH,
+siehe https://dotnet.microsoft.com/download). Fehlt es, bricht der Schritt mit
+einer entsprechenden Fehlermeldung ab.
 
 **Wichtig (Windows):** Für Pipe-/Redirect-Capture (`> out.json`, `ConvertFrom-Json`)
 braucht es kein spezielles Encoding — die Bytes sind immer UTF-8. Interaktive
@@ -60,26 +80,31 @@ Exit-Code `0` = ok, `1` = Fehler.
 | `analyze sonarr\|radarr\|all [--ids 1,2] [--sample N]` | Analyse anstoßen |
 | `search sonarr\|radarr --ids 1,2,3` | FuN-Suche für Items |
 | `grab sonarr\|radarr --ids 1,2,3` | Kandidaten grabben |
+| `missing radarr --ids 1,2,3 [--grab]` | Klassische Radarr-Missing-Suche; mit `--grab` bester grabbbarer Release |
 | `pipeline sonarr\|radarr\|all [--ids 1,2]` | Analyse + Suche + Grab am Stück |
 | `automation list \| run <goalId>` | Automations-Goals |
 
 Globale Flags: `--pretty` (lesbares JSON), `--quiet` (kein stderr-Log),
 `--full` (vollständige Felder), `--limit N`, `--offset N`.
+Spezialflag: `missing radarr --grab`.
 
 ### Typische Agenten-Workflows
 
 ```powershell
 # 1. Überblick holen
-electron out/main/index.js --cli library summary --quiet
+electron out/main/index.cjs --cli library summary --quiet
 
 # 2. Nicht-Fun-Items einer Instanz auflisten (IDs für folgende Aktionen)
-electron out/main/index.js --cli library sonarr --non-fun-only --limit 20 --quiet
+electron out/main/index.cjs --cli library sonarr --non-fun-only --limit 20 --quiet
 
 # 3. Analyse für bestimmte Items anstoßen
-electron out/main/index.js --cli analyze sonarr --ids 12,34,56 --quiet
+electron out/main/index.cjs --cli analyze sonarr --ids 12,34,56 --quiet
 
 # 4. Kompletten Pipeline-Durchlauf
-electron out/main/index.js --cli pipeline all --quiet
+electron out/main/index.cjs --cli pipeline all --quiet
+
+# 5. Klassischer Radarr-Missing-Grab; IDs dürfen auch Radarr-URLs sein
+release\win-unpacked\arr-cli.exe missing radarr --ids http://192.168.0.170:7878/movie/14292 --grab --quiet
 ```
 
 Aktionen (`analyze`/`search`/`grab`/`pipeline`) laufen **synchron** und liefern

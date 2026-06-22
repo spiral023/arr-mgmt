@@ -7,6 +7,8 @@ import {
 } from "../main/ipc";
 import { SonarrClient } from "../main/arr/sonarr-client";
 import { RadarrClient } from "../main/arr/radarr-client";
+import { isGrabbableRelease } from "../main/arr/sonarr-operations";
+import type { RadarrMovie } from "../main/arr/arr-types";
 import type { InstanceKind } from "../shared/ipc-contracts";
 import type { ParsedArgs } from "./args";
 import { fail, ok, paginate, pickFields, type CommandResult } from "./output";
@@ -40,6 +42,8 @@ export async function runCommand(state: IpcState, args: ParsedArgs): Promise<Com
       return grabCommand(state, args);
     case "pipeline":
       return pipelineCommand(state, args);
+    case "missing":
+      return missingCommand(state, args);
     case "automation":
       return automationCommand(state, args);
     case "help":
@@ -131,7 +135,7 @@ async function testInstance(state: IpcState, kind: InstanceKind): Promise<Comman
 function helpCommand(): CommandResult {
   return ok(
     {
-      usage: 'arr-cli <verb> [sub] [optionen]  |  "ARR Ops.exe" --cli <verb> ...',
+      usage: "arr-cli.exe <verb> [sub] [optionen]",
       commands: {
         "library summary|sonarr|radarr": "Bibliotheksdaten (Listen paginiert, --full für alle Felder, --non-fun-only)",
         "item series|movie <arrId>": "Detail eines Eintrags",
@@ -143,6 +147,7 @@ function helpCommand(): CommandResult {
         "analyze sonarr|radarr|all [--ids][--sample]": "Analyse auslösen",
         "search sonarr|radarr --ids 1,2,3": "FuN*-Suche auslösen",
         "grab sonarr|radarr --ids 1,2,3": "Kandidaten grabben",
+        "missing radarr --ids 1,2,3 [--grab]": "Klassische Radarr-Missing-Suche, optional bester Release-Grab",
         "pipeline sonarr|radarr|all [--ids]": "Analyse+Suche+Grab",
         "automation list|run <goalId>": "Automations-Goals",
       },
@@ -247,7 +252,7 @@ async function searchCommand(state: IpcState, args: ParsedArgs): Promise<Command
   }
   let job: import("../main/scheduler/job-runner").Job;
   if (args.sub === "sonarr") job = enqueueSonarrSearch(state, { seriesIds: args.ids });
-  else if (args.sub === "radarr") job = enqueueRadarrSearch(state, { movieIds: args.ids });
+  else if (args.sub === "radarr") job = enqueueRadarrSearch(state, { movieIds: await resolveRadarrMovieIds(state, args.ids) });
   else return fail("missing_argument", "search erwartet: sonarr|radarr", "Beispiel: search sonarr --ids 5,8");
   const data = jobsToActionData(await awaitJobs(state, [job]));
   return ok(data, actionHint("search", data));
@@ -260,10 +265,143 @@ async function grabCommand(state: IpcState, args: ParsedArgs): Promise<CommandRe
   }
   let job: import("../main/scheduler/job-runner").Job;
   if (args.sub === "sonarr") job = enqueueSonarrGrab(state, { seriesIds: args.ids });
-  else if (args.sub === "radarr") job = enqueueRadarrGrab(state, { movieIds: args.ids });
+  else if (args.sub === "radarr") job = enqueueRadarrGrab(state, { movieIds: await resolveRadarrMovieIds(state, args.ids) });
   else return fail("missing_argument", "grab erwartet: sonarr|radarr", "Beispiel: grab sonarr --ids 5,8");
   const data = jobsToActionData(await awaitJobs(state, [job]));
   return ok(data, actionHint("grab", data));
+}
+
+type MissingRadarrItemResult = {
+  requestedId: number;
+  radarrId?: number;
+  title?: string;
+  year?: number;
+  searched: boolean;
+  grabbed: boolean;
+  commandId?: number;
+  releaseTitle?: string;
+  releaseGuid?: string;
+  error?: string;
+};
+
+function radarrClient(state: IpcState): RadarrClient {
+  const config = state.instanceStore.getWithApiKey("radarr");
+  return new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+}
+
+function resolveRadarrMovie(movies: RadarrMovie[], requestedId: number): RadarrMovie | undefined {
+  const asSlug = String(requestedId);
+  return (
+    movies.find((movie) => movie.id === requestedId) ??
+    movies.find((movie) => movie.tmdbId === requestedId) ??
+    movies.find((movie) => movie.titleSlug === asSlug)
+  );
+}
+
+/**
+ * Übersetzt angefragte IDs (interne Radarr-ID, tmdbId oder aus einer URL extrahierte
+ * Zahl) in interne Radarr-`movie.id`s. Eine ID, die sich nicht auflösen lässt, wird
+ * unverändert durchgereicht, damit eine valide interne ID nie verloren geht.
+ */
+async function resolveRadarrMovieIds(state: IpcState, requestedIds: number[]): Promise<number[]> {
+  const movies = await radarrClient(state).getMovies();
+  return requestedIds.map((id) => resolveRadarrMovie(movies, id)?.id ?? id);
+}
+
+function missingRadarrHint(data: { searched: number; grabbed: number; failed: number; grab: boolean }): string {
+  if (data.grab) {
+    return `${data.grabbed} Missing-Movie-Grab(s) ausgelöst, ${data.failed} fehlgeschlagen.`;
+  }
+  return `${data.searched} Radarr-Missing-Suche(n) ausgelöst, ${data.failed} fehlgeschlagen.`;
+}
+
+async function missingCommand(state: IpcState, args: ParsedArgs): Promise<CommandResult> {
+  if (args.sub !== "radarr") {
+    return fail("missing_argument", "missing erwartet aktuell: radarr", "Beispiel: missing radarr --ids 14292 --grab");
+  }
+  if (args.ids.length === 0) {
+    return fail("missing_argument", "missing radarr erwartet --ids 1,2,3", "IDs können auch aus Radarr-URLs kommen, z. B. --ids http://host:7878/movie/14292");
+  }
+
+  const client = radarrClient(state);
+  const movies = await client.getMovies();
+  const items: MissingRadarrItemResult[] = [];
+
+  for (const requestedId of args.ids) {
+    const movie = resolveRadarrMovie(movies, requestedId);
+    if (!movie) {
+      items.push({
+        requestedId,
+        searched: false,
+        grabbed: false,
+        error: `No Radarr movie matched requested id ${requestedId} by internal id, tmdbId, or titleSlug`,
+      });
+      continue;
+    }
+
+    const base = {
+      requestedId,
+      radarrId: movie.id,
+      title: movie.title,
+      year: movie.year,
+    };
+
+    let searched = false;
+    try {
+      if (!args.grab) {
+        const command = await client.runMoviesSearch([movie.id]);
+        searched = true;
+        items.push({
+          ...base,
+          searched,
+          grabbed: false,
+          commandId: typeof command.id === "number" ? command.id : undefined,
+        });
+        continue;
+      }
+
+      const releases = await client.getReleasesForMovie(movie.id);
+      searched = true;
+      const release = releases.find(isGrabbableRelease);
+      if (!release) {
+        items.push({
+          ...base,
+          searched,
+          grabbed: false,
+          error: `No approved/downloadable Radarr release among ${releases.length} result(s)`,
+        });
+        continue;
+      }
+
+      await client.grabRelease(release);
+      items.push({
+        ...base,
+        searched,
+        grabbed: true,
+        releaseTitle: release.title,
+        releaseGuid: release.guid,
+      });
+    } catch (error) {
+      items.push({
+        ...base,
+        searched,
+        grabbed: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const data = {
+    requested: args.ids.length,
+    resolved: items.filter((item) => item.radarrId != null).length,
+    searched: items.filter((item) => item.searched).length,
+    grabbed: items.filter((item) => item.grabbed).length,
+    failed: items.filter((item) => item.error != null).length,
+    mode: args.grab ? "interactive-grab" : "missing-search",
+    items,
+  };
+
+  return ok(data, missingRadarrHint({ ...data, grab: args.grab }));
 }
 
 async function pipelineCommand(state: IpcState, args: ParsedArgs): Promise<CommandResult> {

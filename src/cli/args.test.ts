@@ -11,6 +11,9 @@ describe("parseIds", () => {
   it("returns [] for undefined", () => {
     expect(parseIds(undefined)).toEqual([]);
   });
+  it("extracts IDs from Radarr URLs and comma lists", () => {
+    expect(parseIds("http://192.168.0.170:7878/movie/14292,9050")).toEqual([14292, 9050]);
+  });
 });
 
 describe("isCliInvocation", () => {
@@ -40,6 +43,13 @@ describe("parseCliArgs", () => {
     expect(a.limit).toBe(10);
     expect(a.pretty).toBe(true);
     expect(a.full).toBe(false);
+  });
+  it("parses the missing grab flag", () => {
+    const a = parseCliArgs(["missing", "radarr", "--ids", "http://192.168.0.170:7878/movie/14292", "--grab"]);
+    expect(a.verb).toBe("missing");
+    expect(a.sub).toBe("radarr");
+    expect(a.ids).toEqual([14292]);
+    expect(a.grab).toBe(true);
   });
   it("defaults verb to help when no positional is given", () => {
     expect(parseCliArgs(["--cli"]).verb).toBe("help");

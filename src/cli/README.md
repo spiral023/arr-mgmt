@@ -7,8 +7,15 @@ Logs/Job-Events laufen auf **stderr**.
 ## Aufruf
 
 - Entwicklung (nach `npm run build`): `npm run cli -- <verb> [optionen]`
-  oder `electron out/main/index.js --cli <verb> ...`
-- Gepackt: `"ARR Ops.exe" --cli <verb> ...`
+  oder `electron out/main/index.cjs --cli <verb> ...`
+- Gepackt fuer AI-Agenten: `release\win-unpacked\arr-cli.exe <verb> ...`
+- Direkte App-Exe: `release\win-unpacked\ARR Ops.exe --cli <verb> ...`
+
+`release\ARR Ops 0.1.0.exe` ist der portable GUI-Wrapper von electron-builder und
+nicht fuer stdout-basierte Agenten-CLI-Aufrufe gedacht. `arr-cli.exe` muss im selben
+Ordner wie `ARR Ops.exe` liegen; der Wrapper startet die App im CLI-Modus, entfernt
+`ELECTRON_RUN_AS_NODE` aus der Kindprozess-Umgebung und reicht stdout/stderr sowie den
+Exit-Code unveraendert durch.
 
 **Windows-Konsole:** stdout-Redirect und Pipe-Capture (`> out.json`, `spawn` + stdout-Buffer)
 sind zuverlässig — die Bytes sind immer gültiges UTF-8. Interaktive PowerShell-Sessions
@@ -36,23 +43,38 @@ Exit-Code: `0` = ok, `1` = Fehler. `hint` ist immer ein kurzer nächster-Schritt
 | `analyze sonarr\|radarr\|all [--ids 1,2] [--sample N]` | Analyse |
 | `search sonarr\|radarr --ids 1,2,3` | FuN*-Suche |
 | `grab sonarr\|radarr --ids 1,2,3` | Kandidaten grabben |
+| `missing radarr --ids 1,2,3 [--grab]` | Klassische Radarr-Missing-Suche; mit `--grab` bester grabbbarer Release |
 | `pipeline sonarr\|radarr\|all [--ids 1,2]` | Analyse+Suche+Grab |
 | `automation list \| run <goalId>` | Automations-Goals |
 | `help` | Befehlsübersicht |
 
 Globale Flags: `--pretty`, `--quiet`, `--full`, `--limit N`, `--offset N`.
+Spezialflag: `missing radarr --grab`.
 
 ## Beispiel
 
 ```bash
-electron out/main/index.js --cli library sonarr --non-fun-only --limit 5 > out.json
+release\win-unpacked\arr-cli.exe library sonarr --non-fun-only --limit 5 > out.json
 # {"ok":true,"hint":"… weitere Einträge …","data":[{"arrId":12,"title":"…","status":"searchable","monitored":true,"nonFunFiles":3,"funShare":0.4}],"page":{"total":42,"shown":5,"offset":0}}
 ```
+
+Klassischer Radarr-Fall fuer fehlende Filme:
+
+```bash
+release\win-unpacked\arr-cli.exe missing radarr --ids http://192.168.0.170:7878/movie/14292 --grab --quiet
+```
+
+`--ids` akzeptiert Zahlen und Radarr/Sonarr-URLs. Bei `missing radarr` werden IDs
+gegen Live-Radarr aufgeloest: interne `movie.id`, `tmdbId` und `titleSlug` werden
+verglichen, damit URL-IDs auch dann funktionieren, wenn die lokale Analyse-DB eine
+andere `arrId` gespeichert hat.
 
 ## Für AI-Agenten
 
 - Ausgabe immer JSON auf stdout; menschliche Logs ausschließlich auf stderr (`--quiet` schaltet sie ab).
 - Listen sind absichtlich schlank und paginiert — `--full`/`item` für Details, `--offset`/`--limit` zum Blättern.
 - `--ids` für `search`/`grab` aus `library sonarr|radarr` entnehmen.
+- `--ids` darf auch URLs enthalten, z. B. `--ids http://host:7878/movie/14292`.
 - Aktionen (`analyze`/`search`/`grab`/`pipeline`) sind **synchron**: Sie kehren erst nach Abschluss zurück und liefern Aggregatzahlen (`succeeded`/`failed`/`processed`/`total`) plus `status`.
+- `missing radarr --grab` ist nicht FuN-spezifisch: Es fragt Radarr-Releases live ab und grabbed den ersten `approved`/`downloadAllowed` Release.
 - Den `hint` jeder Antwort lesen — er nennt den sinnvollen nächsten Schritt.

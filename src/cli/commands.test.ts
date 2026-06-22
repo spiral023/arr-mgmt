@@ -78,6 +78,12 @@ describe("runCommand read commands", () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.data).toHaveProperty("commands");
   });
+
+  it("help points agents at the companion CLI executable", async () => {
+    const result = await runCommand(makeState(), parseCliArgs(["help"]));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data).toHaveProperty("usage", "arr-cli.exe <verb> [sub] [optionen]");
+  });
 });
 
 function job(partial: Partial<Job>): Job {

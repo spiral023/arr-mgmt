@@ -8,6 +8,9 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: resolve(__dirname, "src/main/index.ts"),
+        output: {
+          format: "cjs",
+        },
       },
     },
   },

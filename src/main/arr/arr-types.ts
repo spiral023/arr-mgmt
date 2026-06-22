@@ -108,8 +108,12 @@ export type RadarrMovie = {
   id: number;
   title: string;
   sortTitle?: string;
+  titleSlug?: string;
   year?: number;
+  tmdbId?: number;
+  imdbId?: string;
   monitored?: boolean;
+  hasFile?: boolean;
   movieFile?: RadarrMovieFile | null;
   qualityProfileId?: number;
   [key: string]: unknown;

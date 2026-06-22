@@ -2,12 +2,12 @@
   "name": "arr-ops",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
-  "main": "out/main/index.js",
+  "main": "out/main/index.cjs",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "tsc --noEmit && electron-vite build",
-    "dist:win": "npm run build && electron-builder --win portable --x64",
+    "dist:win": "npm run build && electron-builder --win portable --x64 && npm run build:cli-wrapper",
+    "build:cli-wrapper": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-cli-wrapper.ps1",
     "lint": "tsc --noEmit",
     "test": "npm rebuild better-sqlite3 && vitest run",
     "test:live": "vitest run --config vitest.live.config.ts",
@@ -15,14 +15,14 @@
     "test:e2e": "playwright test",
     "serve:renderer": "vite src/renderer --host 127.0.0.1 --port 4173",
     "start": "electron-vite preview",
-    "cli": "electron out/main/index.js --cli"
+    "cli": "electron out/main/index.cjs --cli",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@tanstack/react-table": "^8.21.3",
     "@tanstack/react-virtual": "^3.13.12",
     "better-sqlite3": "^11.10.0",
     "clsx": "^2.1.1",
-    "drizzle-orm": "^0.44.2",
     "electron-store": "^10.0.1",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
@@ -31,6 +31,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.53.1",
+    "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
     "@types/better-sqlite3": "^7.6.13",
@@ -41,17 +42,21 @@
     "autoprefixer": "^10.4.21",
     "electron": "^31.7.7",
     "electron-builder": "^26.15.3",
-    "electron-vite": "^2.3.0",
-    "happy-dom": "^17.6.3",
+    "electron-vite": "^3.1.0",
+    "happy-dom": "^20.10.6",
+    "patch-package": "^8.0.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3",
-    "vite": "^5.4.19",
+    "vite": "^6.4.3",
     "vitest": "^3.2.3"
   },
   "build": {
     "appId": "local.arr-ops",
     "productName": "ARR Ops",
+    "extraMetadata": {
+      "cliCompanion": "arr-cli.exe"
+    },
     "directories": {
       "output": "release"
     },
@@ -70,5 +75,6 @@
         }
       ]
     }
-  }
+  },
+  "type": "module"
 }

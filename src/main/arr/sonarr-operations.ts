@@ -15,17 +15,16 @@ export function getNonFunMovieIds(movies: RadarrMovie[]): number[] {
     .map((movie) => movie.id);
 }
 
+/**
+ * Ein Release ist grabbbar, wenn Radarr/Sonarr es nicht abgelehnt und den Download
+ * nicht blockiert hat. `approved` wird nicht gesondert geprüft: Ein Release mit
+ * `approved === false` trägt immer auch `rejected === true`, sodass `rejected`
+ * bereits ausreichend gatet.
+ */
+export function isGrabbableRelease(release: ArrRelease): boolean {
+  return release.rejected !== true && release.downloadAllowed !== false;
+}
+
 export function selectBestFunRelease(releases: ArrRelease[]): ArrRelease | undefined {
-  return releases.find((release) => {
-    if (!isFunReleaseGroup(release.releaseGroup)) {
-      return false;
-    }
-    if (release.rejected === true) {
-      return false;
-    }
-    if (release.downloadAllowed === false) {
-      return false;
-    }
-    return true;
-  });
+  return releases.find((release) => isFunReleaseGroup(release.releaseGroup) && isGrabbableRelease(release));
 }
