@@ -15,7 +15,7 @@ vi.mock("electron", () => ({
 }));
 
 vi.mock("../main/arr/radarr-client", () => ({
-  RadarrClient: vi.fn(() => radarrApi),
+  RadarrClient: vi.fn(function () { return radarrApi; }),
 }));
 
 import type { IpcState } from "../main/ipc";
