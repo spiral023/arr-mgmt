@@ -11,15 +11,22 @@ export class RadarrClient extends ArrApiClient {
   }
 
   getMovies(): Promise<RadarrMovie[]> {
-    return this.get<RadarrMovie[]>("/movie");
+    return this.getArray<RadarrMovie>("/movie");
   }
+
+  getMovie(id: number): Promise<RadarrMovie> { return this.getEntity(`/movie/${id}`, id); }
+  getMoviesByTmdbId(tmdbId: number): Promise<RadarrMovie[]> { return this.getArray("/movie", { tmdbId }); }
+  getWanted(mode: "missing" | "cutoff", page = 1, pageSize = 100) {
+    return this.getPage<RadarrMovie>(`/wanted/${mode}`, { page, pageSize, monitored: true });
+  }
+  getMovieFile(id: number) { return this.get<import("./arr-types").RadarrMovieFile>(`/moviefile/${id}`); }
 
   getQualityProfiles(): Promise<ArrQualityProfile[]> {
     return this.get<ArrQualityProfile[]>("/qualityprofile");
   }
 
   getReleasesForMovie(movieId: number): Promise<ArrRelease[]> {
-    return this.get<ArrRelease[]>("/release", { movieId });
+    return this.getArray<ArrRelease>("/release", { movieId });
   }
 
   grabRelease(release: ArrRelease): Promise<ArrRelease> {

@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
+import { reconcileRows } from "./state/reconcile-rows";
 import { AppFrame } from "./components/AppFrame";
 import type { KpiItem } from "./components/KpiBar";
 import type { AppTabId } from "./components/TabNav";
@@ -10,6 +11,7 @@ import {
   completeOnboarding,
   getItemDetails,
   getSettings,
+  getSchedulerState,
   getLibrarySummary,
   getQuotaSummary,
   getRadarrRows,
@@ -24,7 +26,9 @@ import {
   searchRadarrMovies,
   searchSonarrSeries,
   setMediaOverride,
+  setSchedulerPaused,
   subscribeToJobEvents,
+  subscribeToSchedulerEvents,
 } from "./state/ipc-client";
 import { shouldRefreshRadarrRows, shouldRefreshSonarrRows } from "./state/refresh-policy";
 import { createRefreshScheduler } from "./state/refresh-scheduler";
@@ -41,7 +45,9 @@ import type { QuotaSummary, RadarrMovieTableRow, SonarrSeriesTableRow } from "..
 
 export function App() {
   const [activeTab, setActiveTab] = useState<AppTabId>("dashboard");
-  const [schedulerPaused, setSchedulerPaused] = useState(false);
+  const [schedulerPaused, setSchedulerPauseState] = useState(false);
+  const [schedulerPending, setSchedulerPending] = useState(false);
+  const [schedulerError, setSchedulerError] = useState<string | undefined>();
   const [sonarrRows, setSonarrRows] = useState<SonarrSeriesTableRow[]>([]);
   const [radarrRows, setRadarrRows] = useState<RadarrMovieTableRow[]>([]);
   const [sonarrStatus, setSonarrStatus] = useState("Ready");
@@ -51,6 +57,36 @@ export function App() {
   const [kpis, setKpis] = useState<KpiItem[]>([]);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [quota, setQuota] = useState<QuotaSummary | undefined>(undefined);
+
+  useEffect(() => {
+    let active = true;
+    let receivedEvent = false;
+    const unsubscribe = subscribeToSchedulerEvents(({ paused }) => {
+      receivedEvent = true;
+      if (active) setSchedulerPauseState(paused);
+    });
+    void getSchedulerState().then(({ paused }) => {
+      if (active && !receivedEvent) setSchedulerPauseState(paused);
+    }).catch((error) => {
+      if (active) setSchedulerError(`Scheduler status unavailable: ${String(error)}`);
+    });
+    return () => { active = false; unsubscribe(); };
+  }, []);
+
+  async function toggleSchedulerPause() {
+    if (schedulerPending) return;
+    setSchedulerPending(true);
+    setSchedulerError(undefined);
+    try {
+      const result = await setSchedulerPaused(!schedulerPaused);
+      setSchedulerPauseState(result.paused);
+    } catch (error) {
+      const message = `Scheduler state could not be changed: ${String(error)}`;
+      setSchedulerError(message);
+    } finally {
+      setSchedulerPending(false);
+    }
+  }
 
   useEffect(() => {
     void getSettings().then((settings) => setOnboardingOpen(!settings.onboardingCompleted));
@@ -105,12 +141,12 @@ export function App() {
 
   async function refreshSonarrRows() {
     const rows = await getSonarrRows();
-    setSonarrRows(rows);
+    startTransition(() => setSonarrRows((previous) => reconcileRows(previous, rows)));
   }
 
   async function refreshRadarrRows() {
     const rows = await getRadarrRows();
-    setRadarrRows(rows);
+    startTransition(() => setRadarrRows((previous) => reconcileRows(previous, rows)));
   }
 
   async function refreshKpis() {
@@ -135,7 +171,7 @@ export function App() {
   async function runSonarrAnalyze(seriesIds?: number[]) {
     setActiveTab("sonarr");
     setSonarrAnalyzing(true);
-    setSonarrStatus(seriesIds && seriesIds.length > 0 ? `Queueing analysis for ${seriesIds.length} selected Sonarr series...` : "Queueing full Sonarr analysis...");
+    setSonarrStatus(seriesIds && seriesIds.length > 0 ? `Queueing analysis for ${seriesIds.length} selected Sonarr series...` : "Queueing Sonarr library refresh...");
     try {
       const job = await analyzeSonarr(seriesIds);
       setSonarrStatus(typeof job === "object" && job !== null && "id" in job ? `Analysis queued: ${String(job.id)}` : "Analysis queued");
@@ -150,7 +186,7 @@ export function App() {
   async function runRadarrAnalyze(movieIds?: number[]) {
     setActiveTab("radarr");
     setRadarrAnalyzing(true);
-    setRadarrStatus(movieIds && movieIds.length > 0 ? `Queueing analysis for ${movieIds.length} selected Radarr movies...` : "Queueing full Radarr analysis...");
+    setRadarrStatus(movieIds && movieIds.length > 0 ? `Queueing analysis for ${movieIds.length} selected Radarr movies...` : "Queueing Radarr library refresh...");
     try {
       const job = await analyzeRadarr(movieIds);
       setRadarrStatus(typeof job === "object" && job !== null && "id" in job ? `Analysis queued: ${String(job.id)}` : "Analysis queued");
@@ -298,12 +334,14 @@ export function App() {
       onGrabRadarr={() => setActiveTab("radarr")}
       onGrabSonarr={() => setActiveTab("sonarr")}
       kpis={kpis}
-      onPauseScheduler={() => setSchedulerPaused((paused) => !paused)}
+      onPauseScheduler={() => void toggleSchedulerPause()}
       onQuickSample={() => void runQuickSample()}
       onSearchRadarr={() => setActiveTab("radarr")}
       onSearchSonarr={() => setActiveTab("sonarr")}
       onTabChange={setActiveTab}
       schedulerPaused={schedulerPaused}
+      schedulerPending={schedulerPending}
+      schedulerError={schedulerError}
     >
       {activeTab === "dashboard" ? <DashboardView /> : null}
       {activeTab === "sonarr" ? (

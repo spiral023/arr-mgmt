@@ -33,6 +33,7 @@ export type JobRunnerChange = {
 
 export type JobContext = {
   jobId: string;
+  signal?: AbortSignal;
   addEvent: (level: JobEvent["level"], message: string) => void;
   incrementProgress: (options?: { failed?: boolean }) => void;
   isCancelled: () => boolean;
@@ -67,6 +68,10 @@ export class JobRunner {
   private readonly jobs = new Map<string, Job>();
   private readonly events: JobEvent[] = [];
   private readonly waiting = new Map<string, Array<() => void>>();
+  private readonly lastProgressFlush = new Map<string, number>();
+  private readonly pendingProgress = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly controllers = new Map<string, AbortController>();
+  private readonly activeJobs = new Set<string>();
   private queue: Promise<void> = Promise.resolve();
 
   constructor(
@@ -94,6 +99,7 @@ export class JobRunner {
     };
 
     this.jobs.set(job.id, job);
+    this.controllers.set(job.id, new AbortController());
     this.persistJob(job);
     this.emitChange("job", job);
     this.queue = this.queue.then(() => this.run(job.id, task)).catch(() => undefined);
@@ -105,6 +111,8 @@ export class JobRunner {
   }
 
   listEvents(jobId?: string): JobEvent[] {
+    // Read full historical logs on demand, rather than keeping every event in RAM.
+    if (this.options.persistence?.listEvents) return this.options.persistence.listEvents(jobId);
     return jobId ? this.events.filter((event) => event.jobId === jobId) : [...this.events];
   }
 
@@ -115,21 +123,22 @@ export class JobRunner {
     }
 
     job.status = "cancelled";
-    if (!job.finishedAt) {
+    this.controllers.get(jobId)?.abort(new JobCancelledError());
+    if (!this.activeJobs.has(jobId)) {
       job.finishedAt = new Date().toISOString();
     }
     this.addEvent(job, "warning", `${job.name} cancelled`);
     this.persistAndEmitJob(job);
-    for (const resolve of this.waiting.get(job.id) ?? []) {
-      resolve();
+    if (!this.activeJobs.has(jobId)) {
+      this.resolveWaiters(job.id);
+      this.controllers.delete(job.id);
     }
-    this.waiting.delete(job.id);
     return true;
   }
 
   async waitFor(jobId: string): Promise<void> {
     const job = this.jobs.get(jobId);
-    if (job && isFinished(job.status)) {
+    if (job && isFinished(job.status) && !this.activeJobs.has(jobId)) {
       return;
     }
 
@@ -145,6 +154,8 @@ export class JobRunner {
     if (!job) return;
     if (job.status === "cancelled") return;
 
+    this.activeJobs.add(jobId);
+    const controller = this.controllers.get(jobId)!;
     job.status = "running";
     job.startedAt = new Date().toISOString();
     this.persistAndEmitJob(job);
@@ -152,6 +163,7 @@ export class JobRunner {
 
     const context: JobContext = {
       jobId: job.id,
+      signal: controller.signal,
       addEvent: (level, message) => this.addEvent(job, level, message),
       incrementProgress: (options) => {
         if (job.status === "cancelled") {
@@ -163,7 +175,7 @@ export class JobRunner {
         } else {
           job.successCount += 1;
         }
-        this.persistAndEmitJob(job);
+        this.updateProgress(job);
       },
       isCancelled: () => job.status === "cancelled",
       setProgress: (current, total) => {
@@ -174,14 +186,14 @@ export class JobRunner {
         if (typeof total === "number") {
           job.progressTotal = total;
         }
-        this.persistAndEmitJob(job);
+        this.updateProgress(job);
       },
       setProgressTotal: (total) => {
         if (job.status === "cancelled") {
           return;
         }
         job.progressTotal = total;
-        this.persistAndEmitJob(job);
+        this.updateProgress(job);
       },
       blockByBudget: (message) => {
         if (job.status !== "cancelled") {
@@ -189,13 +201,12 @@ export class JobRunner {
           job.finishedAt = new Date().toISOString();
           this.addEvent(job, "warning", message);
           this.persistAndEmitJob(job);
+          controller.abort(new JobBlockedByBudgetError(message));
         }
         throw new JobBlockedByBudgetError(message);
       },
       throwIfCancelled: () => {
-        if (job.status === "cancelled") {
-          throw new JobCancelledError();
-        }
+        controller.signal.throwIfAborted();
       },
     };
 
@@ -228,23 +239,45 @@ export class JobRunner {
     } finally {
       job.finishedAt ??= new Date().toISOString();
       this.persistAndEmitJob(job);
-      for (const resolve of this.waiting.get(job.id) ?? []) {
-        resolve();
-      }
-      this.waiting.delete(job.id);
+      this.activeJobs.delete(job.id);
+      this.controllers.delete(job.id);
+      this.resolveWaiters(job.id);
     }
+  }
+
+  private resolveWaiters(jobId: string): void {
+    for (const resolve of this.waiting.get(jobId) ?? []) resolve();
+    this.waiting.delete(jobId);
   }
 
   private addEvent(job: Job, level: JobEvent["level"], message: string): void {
     const event = { jobId: job.id, level, message, createdAt: new Date().toISOString() };
     this.events.push(event);
+    if (this.options.persistence?.listEvents && this.events.length > 200) this.events.splice(0, this.events.length - 200);
     this.options.persistence?.insertEvent?.(event);
     this.emitChange("event", job, event);
   }
 
   private persistAndEmitJob(job: Job): void {
+    const pending = this.pendingProgress.get(job.id);
+    if (pending !== undefined) clearTimeout(pending);
+    this.pendingProgress.delete(job.id);
     this.persistJob(job);
     this.emitChange("job", job);
+    if (isFinished(job.status)) this.lastProgressFlush.delete(job.id);
+  }
+
+  private updateProgress(job: Job): void {
+    const elapsed = Date.now() - (this.lastProgressFlush.get(job.id) ?? -Infinity);
+    if (elapsed >= 250 || (job.progressTotal > 0 && job.progressCurrent >= job.progressTotal)) {
+      this.persistAndEmitJob(job);
+      this.lastProgressFlush.set(job.id, Date.now());
+    } else if (!this.pendingProgress.has(job.id)) {
+      this.pendingProgress.set(job.id, setTimeout(() => {
+        this.persistAndEmitJob(job);
+        this.lastProgressFlush.set(job.id, Date.now());
+      }, 250 - elapsed));
+    }
   }
 
   private persistJob(job: Job): void {

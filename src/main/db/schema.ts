@@ -14,6 +14,7 @@ export const tableNames = [
   "settings",
   "coverage_snapshots",
   "perf_samples",
+  "transfers",
 ] as const;
 
 export type TableName = (typeof tableNames)[number];

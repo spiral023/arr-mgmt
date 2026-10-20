@@ -19,7 +19,15 @@ export class SonarrClient extends ArrApiClient {
   }
 
   getSeries(): Promise<SonarrSeries[]> {
-    return this.get<SonarrSeries[]>("/series");
+    return this.getArray<SonarrSeries>("/series");
+  }
+
+  getSeriesById(id: number): Promise<SonarrSeries> { return this.getEntity(`/series/${id}`, id); }
+  getWanted(mode: "missing" | "cutoff", page = 1, pageSize = 100) {
+    return this.getPage<SonarrEpisode>(`/wanted/${mode}`, {
+      page, pageSize, monitored: true, includeSeries: true,
+      ...(mode === "cutoff" ? { includeEpisodeFile: true } : {}),
+    });
   }
 
   getQualityProfiles(): Promise<ArrQualityProfile[]> {
@@ -27,11 +35,11 @@ export class SonarrClient extends ArrApiClient {
   }
 
   getEpisodes(seriesId: number, includeEpisodeFile: boolean): Promise<SonarrEpisode[]> {
-    return this.get<SonarrEpisode[]>("/episode", { seriesId, includeEpisodeFile });
+    return this.getArray<SonarrEpisode>("/episode", { seriesId, includeEpisodeFile });
   }
 
   getReleasesForEpisode(episodeId: number): Promise<ArrRelease[]> {
-    return this.get<ArrRelease[]>("/release", { episodeId });
+    return this.getArray<ArrRelease>("/release", { episodeId });
   }
 
   /**
@@ -40,7 +48,7 @@ export class SonarrClient extends ArrApiClient {
    * against a single result set instead of querying the indexer once per episode.
    */
   getReleasesForSeason(seriesId: number, seasonNumber: number): Promise<ArrRelease[]> {
-    return this.get<ArrRelease[]>("/release", { seriesId, seasonNumber });
+    return this.getArray<ArrRelease>("/release", { seriesId, seasonNumber });
   }
 
   grabRelease(release: ArrRelease): Promise<ArrRelease> {

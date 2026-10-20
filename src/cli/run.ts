@@ -20,8 +20,10 @@ function emit(result: CommandResult, pretty: boolean): void {
 }
 
 export async function runCli(userArgs: string[]): Promise<void> {
-  const args = parseCliArgs(userArgs);
+  let parsed = false;
   try {
+    const args = parseCliArgs(userArgs);
+    parsed = true;
     await app.whenReady();
     const userData = app.getPath("userData");
     const db = createAppDatabase(join(userData, "arr-ops.sqlite"));
@@ -48,8 +50,9 @@ export async function runCli(userArgs: string[]): Promise<void> {
     app.exit(result.ok ? 0 : 1);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    emit(fail("internal_error", message, "Unerwarteter Fehler — Details siehe stderr."), args.pretty);
-    if (error instanceof Error && error.stack) process.stderr.write(error.stack + "\n");
+    emit(fail(parsed ? "internal_error" : "invalid_argument", message,
+      parsed ? "Unerwarteter Fehler — Details siehe stderr." : "Argumente prüfen; Beispiele mit 'help'."), userArgs.includes("--pretty"));
+    if (parsed && error instanceof Error && error.stack) process.stderr.write(error.stack + "\n");
     app.exit(1);
   }
 }

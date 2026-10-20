@@ -1,4 +1,6 @@
 import type { AppDatabase } from "./client";
+import type { Statement } from "better-sqlite3";
+import { createTransferRepository } from "./transfer-repository";
 import type { ActivityInsert, ActivityStatus, PerfSampleInsert, QuotaType } from "./schema";
 import type { ArrRelease, MediaItemAnalysis } from "../arr/arr-types";
 import type { Job, JobEvent } from "../scheduler/job-runner";
@@ -32,7 +34,19 @@ function toIso(date: Date): string {
 }
 
 export function createRepositories(db: AppDatabase) {
+  // Bound the cache because selection queries can have a variable number of placeholders.
+  const statements = new Map<string, Statement<unknown[]>>();
+  const prepare = (sql: string) => {
+    let statement = statements.get(sql);
+    if (!statement) {
+      statement = db.prepare(sql);
+      if (statements.size >= 128) statements.delete(statements.keys().next().value!);
+      statements.set(sql, statement);
+    }
+    return statement;
+  };
   return {
+    transfers: createTransferRepository(db),
     instances: {
       upsert(input: {
         kind: InstanceKind;
@@ -43,7 +57,7 @@ export function createRepositories(db: AppDatabase) {
         now: Date;
       }): number {
         const now = toIso(input.now);
-        db.prepare(
+        prepare(
           `insert into instances (kind, name, base_url, api_key_encrypted, enabled, created_at, updated_at)
            values (?, ?, ?, ?, ?, ?, ?)
            on conflict(kind) do update set
@@ -54,132 +68,137 @@ export function createRepositories(db: AppDatabase) {
              updated_at = excluded.updated_at`,
         ).run(input.kind, input.name, input.baseUrl, input.apiKeyEncrypted, input.enabled ? 1 : 0, now, now);
 
-        const row = db.prepare("select id from instances where kind = ?").get(input.kind) as { id: number };
+        const row = prepare("select id from instances where kind = ?").get(input.kind) as { id: number };
         return row.id;
       },
 
       findIdByKind(kind: InstanceKind): number | undefined {
-        const row = db.prepare("select id from instances where kind = ?").get(kind) as { id: number } | undefined;
+        const row = prepare("select id from instances where kind = ?").get(kind) as { id: number } | undefined;
         return row?.id;
       },
     },
 
     mediaItems: {
       upsertAnalysis(instanceId: number, item: MediaItemAnalysis): number {
-        db.prepare(
-          `insert into media_items (
-             instance_id,
-             kind,
-             arr_id,
-             title,
-             title_slug,
-             sort_title,
-             year,
-             monitored,
-             has_file,
-             total_children,
-             children_with_file,
-             fun_children,
-             total_size_bytes,
-             fun_share,
-             last_analyzed_at,
-             quality_profile_name
-           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           on conflict(instance_id, kind, arr_id) do update set
-             title = excluded.title,
-             title_slug = excluded.title_slug,
-             sort_title = excluded.sort_title,
-             year = excluded.year,
-             monitored = excluded.monitored,
-             has_file = excluded.has_file,
-             total_children = excluded.total_children,
-             children_with_file = excluded.children_with_file,
-             fun_children = excluded.fun_children,
-             total_size_bytes = excluded.total_size_bytes,
-             fun_share = excluded.fun_share,
-             last_analyzed_at = excluded.last_analyzed_at,
-             quality_profile_name = excluded.quality_profile_name`,
-        ).run(
-          instanceId,
-          item.kind,
-          item.arrId,
-          item.title,
-          item.titleSlug ?? null,
-          item.sortTitle ?? null,
-          item.year ?? null,
-          item.monitored ? 1 : 0,
-          item.hasFile ? 1 : 0,
-          item.totalChildren,
-          item.childrenWithFile,
-          item.funChildren,
-          item.totalSizeBytes,
-          item.funShare,
-          item.lastAnalyzedAt,
-          item.qualityProfileName ?? null,
-        );
+        return db.transaction(() => {
+          prepare(
+            `insert into media_items (
+               instance_id,
+               kind,
+               arr_id,
+               title,
+               title_slug,
+               sort_title,
+               year,
+               monitored,
+               has_file,
+               total_children,
+               children_with_file,
+               fun_children,
+               total_size_bytes,
+               fun_share,
+               last_analyzed_at,
+               quality_profile_name,
+               external_ids_json
+             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             on conflict(instance_id, kind, arr_id) do update set
+               title = excluded.title,
+               title_slug = excluded.title_slug,
+               sort_title = excluded.sort_title,
+               year = excluded.year,
+               monitored = excluded.monitored,
+               has_file = excluded.has_file,
+               total_children = excluded.total_children,
+               children_with_file = excluded.children_with_file,
+               fun_children = excluded.fun_children,
+               total_size_bytes = excluded.total_size_bytes,
+               fun_share = excluded.fun_share,
+               last_analyzed_at = excluded.last_analyzed_at,
+               quality_profile_name = excluded.quality_profile_name,
+               external_ids_json = excluded.external_ids_json`,
+          ).run(
+            instanceId,
+            item.kind,
+            item.arrId,
+            item.title,
+            item.titleSlug ?? null,
+            item.sortTitle ?? null,
+            item.year ?? null,
+            item.monitored ? 1 : 0,
+            item.hasFile ? 1 : 0,
+            item.totalChildren,
+            item.childrenWithFile,
+            item.funChildren,
+            item.totalSizeBytes,
+            item.funShare,
+            item.lastAnalyzedAt,
+            item.qualityProfileName ?? null,
+            JSON.stringify(item.externalIds ?? {}),
+          );
 
-        const mediaItem = db
-          .prepare("select id from media_items where instance_id = ? and kind = ? and arr_id = ?")
-          .get(instanceId, item.kind, item.arrId) as { id: number };
+          const mediaItem = prepare("select id from media_items where instance_id = ? and kind = ? and arr_id = ?")
+            .get(instanceId, item.kind, item.arrId) as { id: number };
 
-        const insertFile = db.prepare(
-          `insert into media_files (
-             media_item_id,
-             arr_file_id,
-             child_arr_id,
-             season_number,
-             episode_number,
-             path,
-             relative_path,
-             release_group,
-             is_fun,
-             quality_name,
-             size_bytes,
-             date_added
-           ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        );
+          const insertFile = prepare(
+            `insert into media_files (
+               media_item_id,
+               arr_file_id,
+               child_arr_id,
+               season_number,
+               episode_number,
+               path,
+               relative_path,
+               release_group,
+               is_fun,
+               quality_name,
+               size_bytes,
+               date_added,
+               media_info_json
+             ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          );
 
-        const applyFileChanges = db.transaction(() => {
-          db.prepare("delete from media_files where media_item_id = ?").run(mediaItem.id);
+          const applyFileChanges = db.transaction(() => {
+            prepare("delete from media_files where media_item_id = ?").run(mediaItem.id);
 
-          for (const file of item.files) {
-            insertFile.run(
-              mediaItem.id,
-              file.arrFileId ?? null,
-              file.childArrId,
-              file.seasonNumber ?? null,
-              file.episodeNumber ?? null,
-              file.path ?? null,
-              file.relativePath ?? null,
-              file.releaseGroup,
-              file.isFun ? 1 : 0,
-              file.qualityName ?? null,
-              file.sizeBytes,
-              null,
-            );
-          }
+            for (const file of item.files) {
+              insertFile.run(
+                mediaItem.id,
+                file.arrFileId ?? null,
+                file.childArrId,
+                file.seasonNumber ?? null,
+                file.episodeNumber ?? null,
+                file.path ?? null,
+                file.relativePath ?? null,
+                file.releaseGroup,
+                file.isFun ? 1 : 0,
+                file.qualityName ?? null,
+                file.sizeBytes,
+                null,
+                JSON.stringify(file.mediaInfo ?? null),
+              );
+            }
 
-          // Any child (movie or episode) that now has a FuN file has reached its
-          // target — drop stale FuN candidates so it is no longer counted as
-          // "Pending FuN*" nor picked up by a grab run.
-          db.prepare(
-            `delete from release_candidates
-             where media_item_id = ?
-               and child_arr_id in (
-                 select child_arr_id from media_files
-                 where media_item_id = ? and is_fun = 1
-               )`,
-          ).run(mediaItem.id, mediaItem.id);
-        });
+            // Any child (movie or episode) that now has a FuN file has reached its
+            // target — drop stale FuN candidates so it is no longer counted as
+            // "Pending FuN*" nor picked up by a grab run.
+            prepare(
+              `delete from release_candidates
+               where media_item_id = ?
+                 and child_arr_id in (
+                   select child_arr_id from media_files
+                   where media_item_id = ? and is_fun = 1
+                 )`,
+            ).run(mediaItem.id, mediaItem.id);
+          });
 
-        applyFileChanges();
+          applyFileChanges();
 
-        return mediaItem.id;
+          return mediaItem.id;
+        })();
       },
 
       summary(): LibrarySummary {
-        const row = db
-          .prepare(
+        const row = prepare(
             `select
                sum(case when kind = 'series' then 1 else 0 end) as totalSeries,
                sum(case when kind = 'movie' then 1 else 0 end) as totalMovies,
@@ -203,8 +222,7 @@ export function createRepositories(db: AppDatabase) {
           radarrFiles: number;
           radarrFunFiles: number;
         };
-        const pending = db
-          .prepare(
+        const pending = prepare(
             `select
                coalesce(sum(case when mi.kind = 'series' then 1 else 0 end), 0) as sonarrPending,
                coalesce(sum(case when mi.kind = 'movie' then 1 else 0 end), 0) as radarrPending
@@ -214,8 +232,7 @@ export function createRepositories(db: AppDatabase) {
              where rc.is_fun = 1 and o.media_item_id is null`,
           )
           .get() as { sonarrPending: number; radarrPending: number };
-        const grabs = db
-          .prepare("select count(*) as count from activity_log where action = 'grab' and status = 'success'")
+        const grabs = prepare("select count(*) as count from activity_log where action = 'grab' and status = 'success'")
           .get() as { count: number };
         return {
           totalSeries: row.totalSeries ?? 0,
@@ -233,8 +250,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       findIdByArrId(kind: "series" | "movie", arrId: number, instanceId?: number): number | undefined {
-        const row = db
-          .prepare(
+        const row = prepare(
             `select id from media_items
              where kind = ? and arr_id = ? and (? is null or instance_id = ?)
              order by id desc
@@ -245,8 +261,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       listAnalyzedArrIds(kind: "series" | "movie", instanceId: number): number[] {
-        const rows = db
-          .prepare(
+        const rows = prepare(
             `select arr_id as arrId
              from media_items
              where instance_id = ? and kind = ? and last_analyzed_at is not null
@@ -256,28 +271,33 @@ export function createRepositories(db: AppDatabase) {
         return rows.map((row) => row.arrId);
       },
 
+      analysisState(kind: "series" | "movie", instanceId: number): Array<{ arrId: number; lastAnalyzedAt: string | null }> {
+        return prepare("select arr_id as arrId, last_analyzed_at as lastAnalyzedAt from media_items where kind = ? and instance_id = ?")
+          .all(kind, instanceId) as Array<{ arrId: number; lastAnalyzedAt: string | null }>;
+      },
+
+      findArrId(mediaItemId: number): number | undefined {
+        return (prepare("select arr_id as arrId from media_items where id = ?").get(mediaItemId) as { arrId: number } | undefined)?.arrId;
+      },
+      qualityProfileName(kind: "series" | "movie", arrId: number, instanceId: number): string | undefined {
+        return (prepare("select quality_profile_name as name from media_items where kind = ? and arr_id = ? and instance_id = ?")
+          .get(kind, arrId, instanceId) as { name: string | null } | undefined)?.name ?? undefined;
+      },
+
+      reconcileCatalog(kind: "series" | "movie", instanceId: number, currentIds: readonly number[]): number {
+        const current = new Set(currentIds);
+        const previous = prepare("select arr_id as arrId from media_items where instance_id = ? and kind = ?")
+          .all(instanceId, kind) as Array<{ arrId: number }>;
+        return db.transaction(() => {
+          const remove = prepare("delete from media_items where instance_id = ? and kind = ? and arr_id = ?");
+          return previous.filter((item) => !current.has(item.arrId))
+            .reduce((count, item) => count + remove.run(instanceId, kind, item.arrId).changes, 0);
+        })();
+      },
+
       listSonarrRows(): SonarrSeriesTableRow[] {
-        const rows = db
-          .prepare(
-            `with last_activity as (
-               select
-                 media_item_id,
-                 max(case when action = 'search' then created_at end) as lastSearched,
-                 max(case when action = 'grab' then created_at end) as lastGrabbed
-               from activity_log
-               where action in ('search', 'grab')
-               group by media_item_id
-             ),
-             pending_candidates as (
-               select
-                 rc.media_item_id,
-                 count(*) as pendingFunCandidates
-               from release_candidates rc
-               left join media_item_overrides o on o.media_item_id = rc.media_item_id and o.is_excluded = 1
-               where rc.is_fun = 1 and o.media_item_id is null
-               group by rc.media_item_id
-             )
-             select
+        const rows = prepare(
+            `select
                mi.id,
                mi.arr_id as arrId,
                mi.title,
@@ -290,15 +310,15 @@ export function createRepositories(db: AppDatabase) {
                mi.total_size_bytes as totalSizeBytes,
                mi.fun_share as funShare,
                mi.last_analyzed_at as lastAnalyzed,
-               la.lastSearched,
-               la.lastGrabbed,
-               coalesce(pc.pendingFunCandidates, 0) as pendingFunCandidates,
+               (select max(created_at) from activity_log where media_item_id = mi.id and action = 'search') as lastSearched,
+               (select max(created_at) from activity_log where media_item_id = mi.id and action = 'grab') as lastGrabbed,
+               case when ovr.media_item_id is not null then 0 else (
+                 select count(*) from release_candidates where media_item_id = mi.id and is_fun = 1
+               ) end as pendingFunCandidates,
                case when ovr.media_item_id is not null then 1 else 0 end as isExcluded,
                mi.quality_profile_name as qualityProfileName
              from media_items mi
              join instances i on i.id = mi.instance_id
-             left join last_activity la on la.media_item_id = mi.id
-             left join pending_candidates pc on pc.media_item_id = mi.id
              left join media_item_overrides ovr on ovr.media_item_id = mi.id and ovr.is_excluded = 1
              where i.kind = 'sonarr' and mi.kind = 'series'
              order by mi.title collate nocase`,
@@ -350,36 +370,8 @@ export function createRepositories(db: AppDatabase) {
       },
 
       listRadarrRows(): RadarrMovieTableRow[] {
-        const rows = db
-          .prepare(
-            `with last_activity as (
-               select
-                 media_item_id,
-                 max(case when action = 'search' then created_at end) as lastSearched,
-                 max(case when action = 'grab' then created_at end) as lastGrabbed
-               from activity_log
-               where action in ('search', 'grab')
-               group by media_item_id
-             ),
-             pending_candidates as (
-               select
-                 rc.media_item_id,
-                 count(*) as pendingFunCandidates
-               from release_candidates rc
-               left join media_item_overrides o on o.media_item_id = rc.media_item_id and o.is_excluded = 1
-               where rc.is_fun = 1 and o.media_item_id is null
-               group by rc.media_item_id
-             ),
-             first_file as (
-               select
-                 media_item_id,
-                 release_group as releaseGroup,
-                 is_fun as isFun,
-                 size_bytes as sizeBytes
-               from media_files
-               group by media_item_id
-             )
-             select
+        const rows = prepare(
+            `select
                mi.id,
                mi.arr_id as arrId,
                mi.title,
@@ -391,19 +383,21 @@ export function createRepositories(db: AppDatabase) {
                mi.total_size_bytes as totalSizeBytes,
                mi.fun_share as funShare,
                mi.last_analyzed_at as lastAnalyzed,
-               la.lastSearched,
-               la.lastGrabbed,
-               coalesce(pc.pendingFunCandidates, 0) as pendingFunCandidates,
+               (select max(created_at) from activity_log where media_item_id = mi.id and action = 'search') as lastSearched,
+               (select max(created_at) from activity_log where media_item_id = mi.id and action = 'grab') as lastGrabbed,
+               case when ovr.media_item_id is not null then 0 else (
+                 select count(*) from release_candidates where media_item_id = mi.id and is_fun = 1
+               ) end as pendingFunCandidates,
                case when ovr.media_item_id is not null then 1 else 0 end as isExcluded,
-               ff.releaseGroup,
-               coalesce(ff.isFun, 0) as isFun,
-               coalesce(ff.sizeBytes, mi.total_size_bytes, 0) as sizeBytes,
+               ff.release_group as releaseGroup,
+               coalesce(ff.is_fun, 0) as isFun,
+               coalesce(ff.size_bytes, mi.total_size_bytes, 0) as sizeBytes,
                mi.quality_profile_name as qualityProfileName
              from media_items mi
              join instances i on i.id = mi.instance_id
-             left join last_activity la on la.media_item_id = mi.id
-             left join pending_candidates pc on pc.media_item_id = mi.id
-             left join first_file ff on ff.media_item_id = mi.id
+             left join media_files ff on ff.id = (
+               select id from media_files where media_item_id = mi.id order by id limit 1
+             )
              left join media_item_overrides ovr on ovr.media_item_id = mi.id and ovr.is_excluded = 1
              where i.kind = 'radarr' and mi.kind = 'movie'
              order by mi.title collate nocase`,
@@ -458,15 +452,13 @@ export function createRepositories(db: AppDatabase) {
       },
 
       itemDetails(kind: "series" | "movie", arrId: number): MediaItemDetails {
-        const item = db
-          .prepare("select id from media_items where kind = ? and arr_id = ? order by id desc limit 1")
-          .get(kind, arrId) as { id: number } | undefined;
+        const item = prepare("select id, external_ids_json as externalIds from media_items where kind = ? and arr_id = ? order by id desc limit 1")
+          .get(kind, arrId) as { id: number; externalIds: string | null } | undefined;
         if (!item) {
           return { kind, arrId, nonFunFiles: [], candidates: [] };
         }
 
-        const fileRows = db
-          .prepare(
+        const fileRows = prepare(
             `select
                child_arr_id as childArrId,
                season_number as seasonNumber,
@@ -489,8 +481,7 @@ export function createRepositories(db: AppDatabase) {
           sizeBytes: number;
         }>;
 
-        const candidateRows = db
-          .prepare(
+        const candidateRows = prepare(
             `select
                id,
                child_arr_id as childArrId,
@@ -520,6 +511,14 @@ export function createRepositories(db: AppDatabase) {
         return {
           kind,
           arrId,
+          externalIds: JSON.parse(item.externalIds ?? "{}"),
+          transfers: createTransferRepository(db).list(item.id),
+          files: (prepare(`select child_arr_id as childArrId, season_number as seasonNumber, episode_number as episodeNumber,
+            relative_path as relativePath, release_group as releaseGroup, quality_name as quality, size_bytes as sizeBytes,
+            media_info_json as mediaInfoJson from media_files where media_item_id = ? order by season_number, episode_number, id`)
+            .all(item.id) as Array<import("../../shared/ipc-contracts").NonFunFileView & { mediaInfoJson: string | null }>).map(({ mediaInfoJson, ...file }) => ({
+              ...file, mediaInfo: JSON.parse(mediaInfoJson ?? "null"),
+            })),
           nonFunFiles: fileRows.map((row) => ({
             childArrId: row.childArrId ?? 0,
             seasonNumber: row.seasonNumber,
@@ -546,8 +545,7 @@ export function createRepositories(db: AppDatabase) {
 
     mediaFiles: {
       listForAutomation(input: { scope: AutomationScope }): AutomationMediaFileView[] {
-        const rows = db
-          .prepare(
+        const rows = prepare(
             `with last_activity as (
                select
                  instance_id,
@@ -615,15 +613,14 @@ export function createRepositories(db: AppDatabase) {
         note?: string | null;
         now: Date;
       }): { ok: boolean; message: string } {
-        const item = db
-          .prepare("select id from media_items where kind = ? and arr_id = ? order by id desc limit 1")
+        const item = prepare("select id from media_items where kind = ? and arr_id = ? order by id desc limit 1")
           .get(input.kind, input.arrId) as { id: number } | undefined;
         if (!item) {
           return { ok: false, message: "Media item not found" };
         }
         const now = toIso(input.now);
         const apply = db.transaction(() => {
-          db.prepare(
+          prepare(
             `insert into media_item_overrides (media_item_id, is_excluded, note, created_at, updated_at)
              values (?, ?, ?, ?, ?)
              on conflict(media_item_id) do update set
@@ -632,7 +629,7 @@ export function createRepositories(db: AppDatabase) {
                updated_at = excluded.updated_at`,
           ).run(item.id, input.excluded ? 1 : 0, input.note ?? null, now, now);
           if (input.excluded) {
-            db.prepare("delete from release_candidates where media_item_id = ?").run(item.id);
+            prepare("delete from release_candidates where media_item_id = ?").run(item.id);
           }
         });
         apply();
@@ -640,15 +637,13 @@ export function createRepositories(db: AppDatabase) {
       },
 
       isExcluded(mediaItemId: number): boolean {
-        const row = db
-          .prepare("select 1 as present from media_item_overrides where media_item_id = ? and is_excluded = 1")
+        const row = prepare("select 1 as present from media_item_overrides where media_item_id = ? and is_excluded = 1")
           .get(mediaItemId) as { present: number } | undefined;
         return row !== undefined;
       },
 
       excludedItemIds(): number[] {
-        const rows = db
-          .prepare("select media_item_id as mediaItemId from media_item_overrides where is_excluded = 1")
+        const rows = prepare("select media_item_id as mediaItemId from media_item_overrides where is_excluded = 1")
           .all() as Array<{ mediaItemId: number }>;
         return rows.map((row) => row.mediaItemId);
       },
@@ -662,8 +657,7 @@ export function createRepositories(db: AppDatabase) {
         release: ArrRelease;
         foundAt: Date;
       }): number {
-        const result = db
-          .prepare(
+        const result = prepare(
             `insert into release_candidates (
                instance_id,
                media_item_id,
@@ -709,8 +703,7 @@ export function createRepositories(db: AppDatabase) {
           return [];
         }
         const placeholders = seriesIds.map(() => "?").join(", ");
-        const rows = db
-          .prepare(
+        const rows = prepare(
             `select rc.id, rc.media_item_id as mediaItemId, rc.child_arr_id as childArrId, rc.raw_json as rawJson
              from release_candidates rc
              join media_items mi on mi.id = rc.media_item_id
@@ -731,8 +724,7 @@ export function createRepositories(db: AppDatabase) {
           return [];
         }
         const placeholders = movieIds.map(() => "?").join(", ");
-        const rows = db
-          .prepare(
+        const rows = prepare(
             `select rc.id, rc.media_item_id as mediaItemId, rc.child_arr_id as childArrId, rc.raw_json as rawJson
              from release_candidates rc
              join media_items mi on mi.id = rc.media_item_id
@@ -749,13 +741,13 @@ export function createRepositories(db: AppDatabase) {
       },
 
       delete(id: number): void {
-        db.prepare("delete from release_candidates where id = ?").run(id);
+        prepare("delete from release_candidates where id = ?").run(id);
       },
     },
 
     jobs: {
       upsert(job: Job): void {
-        db.prepare(
+        prepare(
           `insert into jobs (
              id,
              name,
@@ -798,7 +790,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       insertEvent(event: JobEvent): void {
-        db.prepare("insert into job_events (job_id, level, message, created_at) values (?, ?, ?, ?)").run(
+        prepare("insert into job_events (job_id, level, message, created_at) values (?, ?, ?, ?)").run(
           event.jobId,
           event.level,
           event.message,
@@ -807,8 +799,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       list(): Job[] {
-        const rows = db
-          .prepare(
+        const rows = prepare(
             `select
                id,
                name,
@@ -832,16 +823,15 @@ export function createRepositories(db: AppDatabase) {
       listEvents(jobId?: string): JobEvent[] {
         const sql = `select job_id as jobId, level, message, created_at as createdAt from job_events`;
         const rows = jobId
-          ? db.prepare(`${sql} where job_id = ? order by created_at asc`).all(jobId)
-          : db.prepare(`${sql} order by created_at desc limit 200`).all();
+          ? prepare(`${sql} where job_id = ? order by created_at asc`).all(jobId)
+          : prepare(`${sql} order by created_at desc limit 200`).all();
         return rows as JobEvent[];
       },
     },
 
     activityLog: {
       insert(input: ActivityInsert): number {
-        const result = db
-          .prepare(
+        const result = prepare(
             `insert into activity_log (
               instance_id,
               media_item_id,
@@ -869,7 +859,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       update(id: number, input: { status: ActivityStatus; message?: string | null; payloadJson?: string | null }): void {
-        db.prepare(
+        prepare(
           `update activity_log
            set status = ?,
                message = coalesce(?, message),
@@ -880,8 +870,7 @@ export function createRepositories(db: AppDatabase) {
 
       countSince(quotaType: Exclude<QuotaType, "none">, now: Date, windowHours: number): number {
         const since = new Date(now.getTime() - windowHours * 60 * 60 * 1000).toISOString();
-        const row = db
-          .prepare(
+        const row = prepare(
             `select count(*) as count
              from activity_log
              where quota_type = ?
@@ -901,8 +890,7 @@ export function createRepositories(db: AppDatabase) {
         windowHours: number;
       }): boolean {
         const since = new Date(input.now.getTime() - input.windowHours * 60 * 60 * 1000).toISOString();
-        const row = db
-          .prepare(
+        const row = prepare(
             `select 1 as found
              from activity_log
              where action = ?
@@ -925,8 +913,7 @@ export function createRepositories(db: AppDatabase) {
         quota: string;
         status: string;
       }> {
-        return db
-          .prepare(
+        return prepare(
             `select
                a.action,
                coalesce(i.kind, 'external') as app,
@@ -953,7 +940,7 @@ export function createRepositories(db: AppDatabase) {
 
     perfSamples: {
       insert(input: PerfSampleInsert): void {
-        db.prepare(
+        prepare(
           `insert into perf_samples (
              job_id,
              app,
@@ -988,8 +975,7 @@ export function createRepositories(db: AppDatabase) {
         minMs: number;
         maxMs: number;
       }> {
-        return db
-          .prepare(
+        return prepare(
             `select
                operation,
                outcome,
@@ -1020,8 +1006,7 @@ export function createRepositories(db: AppDatabase) {
         minMs: number;
         maxMs: number;
       }> {
-        return db
-          .prepare(
+        return prepare(
             `select
                operation,
                outcome,
@@ -1058,7 +1043,7 @@ export function createRepositories(db: AppDatabase) {
         ).toISOString();
 
         if (input.id) {
-          db.prepare(
+          prepare(
             `update schedules
              set name = ?,
                  enabled = ?,
@@ -1083,7 +1068,7 @@ export function createRepositories(db: AppDatabase) {
             input.id,
           );
         } else {
-          db.prepare(
+          prepare(
             `insert into schedules (
                name,
                enabled,
@@ -1112,15 +1097,14 @@ export function createRepositories(db: AppDatabase) {
 
         const id =
           input.id ??
-          (db.prepare("select last_insert_rowid() as id").get() as {
+          (prepare("select last_insert_rowid() as id").get() as {
             id: number;
           }).id;
         return this.find(id)!;
       },
 
       list(): ScheduleView[] {
-        const rows = db
-          .prepare(
+        const rows = prepare(
             `select
                id,
                name,
@@ -1140,8 +1124,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       find(id: number): ScheduleView | undefined {
-        const row = db
-          .prepare(
+        const row = prepare(
             `select
                id,
                name,
@@ -1161,7 +1144,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       markRun(id: number, lastRunAt: Date, nextRunAt: Date): void {
-        db.prepare("update schedules set last_run_at = ?, next_run_at = ?, updated_at = ? where id = ?").run(
+        prepare("update schedules set last_run_at = ?, next_run_at = ?, updated_at = ? where id = ?").run(
           toIso(lastRunAt),
           toIso(nextRunAt),
           toIso(lastRunAt),
@@ -1170,7 +1153,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       delete(id: number): void {
-        db.prepare("delete from schedules where id = ?").run(id);
+        prepare("delete from schedules where id = ?").run(id);
       },
     },
 
@@ -1182,7 +1165,7 @@ export function createRepositories(db: AppDatabase) {
 
         let id = input.id;
         if (id !== undefined) {
-          const result = db.prepare(
+          const result = prepare(
             `update automation_goals
              set name = ?,
                  enabled = ?,
@@ -1216,10 +1199,10 @@ export function createRepositories(db: AppDatabase) {
             throw new Error(`Automation goal ${id} not found`);
           }
         } else {
-          const priorityRow = db.prepare("select coalesce(max(priority), 0) + 1 as priority from automation_goals").get() as {
+          const priorityRow = prepare("select coalesce(max(priority), 0) + 1 as priority from automation_goals").get() as {
             priority: number;
           };
-          const result = db.prepare(
+          const result = prepare(
             `insert into automation_goals (
                name,
                enabled,
@@ -1264,24 +1247,23 @@ export function createRepositories(db: AppDatabase) {
       },
 
       list(): AutomationGoalView[] {
-        const rows = db
-          .prepare(`${automationGoalSelectSql} order by priority asc, id asc`)
+        const rows = prepare(`${automationGoalSelectSql} order by priority asc, id asc`)
           .all() as AutomationGoalRow[];
         return rows.map((row) => formatAutomationGoalRow(db, row));
       },
 
       find(id: number): AutomationGoalView | undefined {
-        const row = db.prepare(`${automationGoalSelectSql} where id = ?`).get(id) as AutomationGoalRow | undefined;
+        const row = prepare(`${automationGoalSelectSql} where id = ?`).get(id) as AutomationGoalRow | undefined;
         return row ? formatAutomationGoalRow(db, row) : undefined;
       },
 
       delete(id: number): void {
-        db.prepare("delete from automation_goals where id = ?").run(id);
+        prepare("delete from automation_goals where id = ?").run(id);
       },
 
       reorder(goalIds: number[], now: Date): void {
         const nowIso = toIso(now);
-        const updatePriority = db.prepare("update automation_goals set priority = ?, updated_at = ? where id = ?");
+        const updatePriority = prepare("update automation_goals set priority = ?, updated_at = ? where id = ?");
         const reorderGoals = db.transaction((ids: number[]) => {
           ids.forEach((id, index) => updatePriority.run(index + 1, nowIso, id));
         });
@@ -1289,7 +1271,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       setManualStatus(id: number, status: AutomationManualStatus, now: Date): void {
-        db.prepare("update automation_goals set manual_status = ?, updated_at = ? where id = ?").run(status, toIso(now), id);
+        prepare("update automation_goals set manual_status = ?, updated_at = ? where id = ?").run(status, toIso(now), id);
       },
 
       markRunResult(
@@ -1301,7 +1283,7 @@ export function createRepositories(db: AppDatabase) {
         const nextEligibleRunAt = input.nextEligibleRunAt ? toIso(input.nextEligibleRunAt) : null;
         const lastRunAt = toIso(input.lastRunAt);
 
-        db.prepare(
+        prepare(
           `update automation_goals
            set last_run_at = ?,
                next_eligible_run_at = case when ? then ? else next_eligible_run_at end,
@@ -1322,7 +1304,7 @@ export function createRepositories(db: AppDatabase) {
 
     automationWorkItems: {
       reconcile(goalId: number, desiredItems: AutomationWorkItemReconcileInput[], now = desiredItems[0]?.now ?? new Date()): void {
-        const upsertWorkItem = db.prepare(
+        const upsertWorkItem = prepare(
           `insert into automation_work_items (
              goal_id,
              instance_id,
@@ -1352,12 +1334,12 @@ export function createRepositories(db: AppDatabase) {
              last_error = case when excluded.status = 'failed' then automation_work_items.last_error else null end,
              updated_at = excluded.updated_at`,
         );
-        const listExisting = db.prepare(
+        const listExisting = prepare(
           `select id, instance_id as instanceId, kind, child_arr_id as childArrId
            from automation_work_items
            where goal_id = ?`,
         );
-        const markOutOfScope = db.prepare("update automation_work_items set status = 'out_of_scope', updated_at = ? where id = ?");
+        const markOutOfScope = prepare("update automation_work_items set status = 'out_of_scope', updated_at = ? where id = ?");
         const reconcileItems = db.transaction((items: AutomationWorkItemReconcileInput[], reconciledAt: Date) => {
           const desiredKeys = new Set<string>();
 
@@ -1399,8 +1381,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       listForGoal(goalId: number): AutomationWorkItemView[] {
-        const rows = db
-          .prepare(
+        const rows = prepare(
             `select
                id,
                goal_id as goalId,
@@ -1441,7 +1422,7 @@ export function createRepositories(db: AppDatabase) {
         const hasLastSearchedAt = hasOwn(input, "lastSearchedAt");
         const hasLastGrabbedAt = hasOwn(input, "lastGrabbedAt");
         const hasLastError = hasOwn(input, "lastError");
-        db.prepare(
+        prepare(
           `update automation_work_items
            set status = ?,
                last_searched_at = case when ? then ? else last_searched_at end,
@@ -1463,8 +1444,7 @@ export function createRepositories(db: AppDatabase) {
           id,
         );
 
-        const row = db
-          .prepare(
+        const row = prepare(
             `select
                id,
                goal_id as goalId,
@@ -1494,8 +1474,7 @@ export function createRepositories(db: AppDatabase) {
     automationRuns: {
       start(input: { goalId: number; trigger: AutomationRunTrigger; jobId?: string | null; now: Date }): AutomationRunView {
         const jobId = input.jobId && jobExists(db, input.jobId) ? input.jobId : null;
-        const result = db
-          .prepare(
+        const result = prepare(
             `insert into automation_runs (
                goal_id,
                job_id,
@@ -1518,7 +1497,7 @@ export function createRepositories(db: AppDatabase) {
         if (!run) {
           return undefined;
         }
-        db.prepare(
+        prepare(
           `update automation_runs
            set status = ?,
                progress_current = ?,
@@ -1536,7 +1515,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       updateProgress(id: number, input: { progressCurrent: number; progressTotal: number }): AutomationRunView | undefined {
-        db.prepare("update automation_runs set progress_current = ?, progress_total = ? where id = ?").run(
+        prepare("update automation_runs set progress_current = ?, progress_total = ? where id = ?").run(
           input.progressCurrent,
           input.progressTotal,
           id,
@@ -1545,8 +1524,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       listForGoal(goalId: number): AutomationRunView[] {
-        const rows = db
-          .prepare(`${automationRunSelectSql} where goal_id = ? order by started_at desc, id desc`)
+        const rows = prepare(`${automationRunSelectSql} where goal_id = ? order by started_at desc, id desc`)
           .all(goalId) as AutomationRunRow[];
         return rows.map(formatAutomationRunRow);
       },
@@ -1560,15 +1538,13 @@ export function createRepositories(db: AppDatabase) {
         message: string;
         createdAt: Date;
       }): number {
-        const result = db
-          .prepare("insert into automation_events (goal_id, run_id, level, message, created_at) values (?, ?, ?, ?, ?)")
+        const result = prepare("insert into automation_events (goal_id, run_id, level, message, created_at) values (?, ?, ?, ?, ?)")
           .run(input.goalId, input.runId ?? null, input.level, input.message, toIso(input.createdAt));
         return Number(result.lastInsertRowid);
       },
 
       list(goalId: number, limit = 100): AutomationEventView[] {
-        const rows = db
-          .prepare(
+        const rows = prepare(
             `select
                id,
                goal_id as goalId,
@@ -1588,12 +1564,12 @@ export function createRepositories(db: AppDatabase) {
 
     settings: {
       get<T>(key: string, fallback: T): T {
-        const row = db.prepare("select value_json as valueJson from settings where key = ?").get(key) as { valueJson: string } | undefined;
+        const row = prepare("select value_json as valueJson from settings where key = ?").get(key) as { valueJson: string } | undefined;
         return row ? (JSON.parse(row.valueJson) as T) : fallback;
       },
 
       set(key: string, value: unknown): void {
-        db.prepare(
+        prepare(
           `insert into settings (key, value_json)
            values (?, ?)
            on conflict(key) do update set value_json = excluded.value_json`,
@@ -1606,7 +1582,7 @@ export function createRepositories(db: AppDatabase) {
         const summary = this.mediaSummary();
         const date = toDateKey(now);
         const iso = toIso(now);
-        db.prepare(
+        prepare(
           `insert into coverage_snapshots (
              date,
              sonarr_fun_share,
@@ -1640,8 +1616,7 @@ export function createRepositories(db: AppDatabase) {
       },
 
       summary(): StatsSummary {
-        const coverageHistory = db
-          .prepare(
+        const coverageHistory = prepare(
             `select
                date,
                sonarr_fun_share as sonarrFunShare,
@@ -1652,8 +1627,7 @@ export function createRepositories(db: AppDatabase) {
              limit 90`,
           )
           .all() as StatsSummary["coverageHistory"];
-        const dailyActivity = db
-          .prepare(
+        const dailyActivity = prepare(
             `select
                substr(created_at, 1, 10) as date,
                sum(case when action = 'analysis' then 1 else 0 end) as analyses,
@@ -1666,8 +1640,7 @@ export function createRepositories(db: AppDatabase) {
              limit 90`,
           )
           .all() as StatsSummary["dailyActivity"];
-        const totals = db
-          .prepare(
+        const totals = prepare(
             `select
                sum(case when action = 'analysis' then 1 else 0 end) as analyses,
                sum(case when action = 'search' then 1 else 0 end) as searches,
@@ -1697,8 +1670,7 @@ export function createRepositories(db: AppDatabase) {
         radarrFunFiles: number;
         totalFiles: number;
       } {
-        const row = db
-          .prepare(
+        const row = prepare(
             `select
                coalesce(sum(case when kind = 'series' then children_with_file else 0 end), 0) as sonarrFiles,
                coalesce(sum(case when kind = 'series' then fun_children else 0 end), 0) as sonarrFunFiles,

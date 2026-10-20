@@ -35,11 +35,20 @@ import type {
   StatsSummary,
 } from "../../shared/ipc-contracts";
 
+const sharedReads = new Set<IpcChannel>(["library:summary", "quota:summary", "jobs:list", "activity:recent", "library:sonarr", "library:radarr"]);
+const pendingReads = new Map<IpcChannel, Promise<unknown>>();
+
 export async function invokeIpc<T>(channel: IpcChannel, payload?: unknown): Promise<T> {
   if (!window.arrOps) {
     return getBrowserFallback<T>(channel);
   }
-  return window.arrOps.invoke<T>(channel, payload);
+  if (payload !== undefined || !sharedReads.has(channel)) return window.arrOps.invoke<T>(channel, payload);
+  const pending = pendingReads.get(channel);
+  if (pending) return pending as Promise<T>;
+  const request = window.arrOps.invoke<T>(channel, payload);
+  pendingReads.set(channel, request);
+  try { return await request; }
+  finally { if (pendingReads.get(channel) === request) pendingReads.delete(channel); }
 }
 
 export function listInstances(): Promise<InstanceConfigView[]> {
@@ -170,6 +179,18 @@ export function getSettings(): Promise<SettingsViewModel> {
   return invokeIpc<SettingsViewModel>("settings:get");
 }
 
+export function getSchedulerState(): Promise<{ paused: boolean }> {
+  return invokeIpc("scheduler:getState");
+}
+
+export function setSchedulerPaused(paused: boolean): Promise<{ paused: boolean }> {
+  return invokeIpc("scheduler:setPaused", { paused });
+}
+
+export function subscribeToSchedulerEvents(callback: (payload: { paused: boolean }) => void): () => void {
+  return window.arrOps?.onSchedulerEvent?.(callback) ?? (() => undefined);
+}
+
 export function updateAppSettings(input: AppSettingsInput): Promise<SettingsViewModel["appSettings"]> {
   return invokeIpc<SettingsViewModel["appSettings"]>("settings:update", input);
 }
@@ -238,6 +259,8 @@ export function subscribeToJobEvents(callback: (payload: unknown) => void): () =
 }
 
 function getBrowserFallback<T>(channel: IpcChannel): T {
+  if (channel === "scheduler:getState") return { paused: false } as T;
+  if (channel === "scheduler:setPaused") throw new Error("Scheduler controls require the desktop app");
   if (channel === "instances:list") {
     return [
       { kind: "sonarr", name: "Sonarr", baseUrl: "http://192.168.0.170:8989", enabled: true, hasApiKey: false },

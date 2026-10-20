@@ -4,6 +4,7 @@ import { Ban, ExternalLink, Eye, Play, Radar, Search, ShieldOff, Zap } from "luc
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { MediaDetailLists } from "../components/MediaDetailLists";
+import { WantedList } from "../components/WantedList";
 import { ReleaseGroupBadge } from "../components/ReleaseGroupBadge";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
 import { useItemDetails } from "../state/use-item-details";
@@ -245,6 +246,7 @@ export function RadarrMoviesView({
         title="Radarr Pipeline"
       />
 
+      <WantedList kind="radarr" />
       <DataTable
         bulkActions={(selectedRows) => (
           <>
@@ -318,7 +320,7 @@ export function RadarrMoviesView({
             <Detail label="Last searched" value={detailsRow.lastSearched} />
             <Detail label="Last grabbed" value={detailsRow.lastGrabbed} />
           </div>
-          <MediaDetailLists details={details} kind="movie" loading={detailsLoading} />
+          <MediaDetailLists key={detailsRow.arrId} details={details} kind="movie" loading={detailsLoading} />
         </section>
       ) : null}
     </div>
@@ -338,6 +340,13 @@ function RadarrFilters({
   const activePending = columnFilters.find((f) => f.id === "pendingFunCandidates")?.value;
   const activeStatus = columnFilters.find((f) => f.id === "status")?.value;
   const activeMonitored = columnFilters.find((f) => f.id === "monitored")?.value;
+  const activeProfile = String(columnFilters.find((f) => f.id === "qualityProfileName")?.value ?? "");
+  const activeFunState = columnFilters.some((f) => f.id === "nonFunFiles" && f.value === "positive")
+    ? "notFun" : activeFunShare === "eq1" ? "fun" : "";
+  const activeFlags = activeStatus === "searchable" ? "searchableNow"
+    : activePending === "positive" ? "candidateFound"
+    : columnFilters.some((f) => f.id === "hasFiles" && f.value === true) ? "hasFile"
+    : activeMonitored === true ? "monitored" : "";
 
   function toggleFilter(columnId: string, value: TableFilterValue, exclusiveColumns: string[] = [columnId]) {
     let next = columnFilters;
@@ -357,6 +366,7 @@ function RadarrFilters({
       <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-white/[0.08]" />
       <FilterSelect
         label="FuN state"
+        value={activeFunState}
         onChange={(value) => {
           let next = updateColumnFilter(columnFilters, "funShare", "");
           next = updateColumnFilter(next, "nonFunFiles", "");
@@ -372,6 +382,7 @@ function RadarrFilters({
       />
       <FilterSelect
         label="Flags"
+        value={activeFlags}
         onChange={(value) => {
           let next = updateColumnFilter(columnFilters, "monitored", "");
           next = updateColumnFilter(next, "hasFiles", "");
@@ -391,9 +402,10 @@ function RadarrFilters({
           ["candidateFound", "Candidate found"],
         ]}
       />
-      {qualityProfileNames.length > 0 && (
+      {(qualityProfileNames.length > 0 || activeProfile) && (
         <FilterSelect
           label="Quality profile"
+          value={activeProfile}
           onChange={(value) => onColumnFiltersChange(updateColumnFilter(columnFilters, "qualityProfileName", value))}
           options={[["", "All profiles"], ...qualityProfileNames.map((n): [string, string] => [n, n])]}
         />

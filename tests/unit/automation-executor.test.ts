@@ -9,6 +9,7 @@ import { defaultAppSettings } from "../../src/main/settings/app-settings";
 import { createInMemoryDatabase } from "../../src/main/db/client";
 import { migrateDatabase } from "../../src/main/db/migrations";
 import { createRepositories } from "../../src/main/db/repositories";
+import { JobRunner } from "../../src/main/scheduler/job-runner";
 import type { AppSettings, AutomationGoalFilters, AutomationGoalView } from "../../src/shared/ipc-contracts";
 
 const now = new Date("2026-06-18T12:00:00.000Z");
@@ -65,6 +66,27 @@ describe("createAutomationExecutor", () => {
         status: "candidate_found",
       }),
     );
+  });
+
+  it("never grabs or searches the next item when cancelled during a release search", async () => {
+    const fixture = createFixture({ includeSecondSonarr: true });
+    const clients = createClients();
+    const runner = new JobRunner({ show: vi.fn() });
+    let jobId = "";
+    clients.sonarr.getReleasesForEpisode = vi.fn(async () => {
+      runner.cancel(jobId);
+      return [release()];
+    });
+    const executor = createExecutor(fixture, clients);
+    const job = runner.enqueue({ name: "Cancel during search", kind: "automation", run: async (context) => {
+      await executor({ goal: fixture.goal, run: fixture.run, workItems: fixture.repos.automationWorkItems.listForGoal(fixture.goal.id), context });
+    } });
+    jobId = job.id;
+    await runner.waitFor(job.id);
+    expect(job.status).toBe("cancelled");
+    expect(clients.sonarr.getReleasesForEpisode).toHaveBeenCalledOnce();
+    expect(clients.sonarr.grabRelease).not.toHaveBeenCalled();
+    expect(fixture.repos.activityLog.countSince("grab", now, 24)).toBe(0);
   });
 
   it("checks the ARR connection before searching and stops without consuming quota when it fails", async () => {

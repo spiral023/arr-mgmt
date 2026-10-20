@@ -5,6 +5,7 @@ import { clsx } from "clsx";
 import { DataTable } from "../components/DataTable";
 import { IconButton } from "../components/IconButton";
 import { MediaDetailLists } from "../components/MediaDetailLists";
+import { WantedList } from "../components/WantedList";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
 import { useItemDetails } from "../state/use-item-details";
 import { updateColumnFilter, type TableFilterValue } from "../state/table-state";
@@ -243,6 +244,7 @@ export function SonarrSeriesView({
         statusMessage={statusMessage}
         title="Sonarr Pipeline"
       />
+      <WantedList kind="sonarr" />
       <DataTable
         bulkActions={(selectedRows) => (
           <>
@@ -315,7 +317,7 @@ export function SonarrSeriesView({
             <Detail label="Last searched" value={detailsRow.lastSearched} />
             <Detail label="Last grabbed" value={detailsRow.lastGrabbed} />
           </div>
-          <MediaDetailLists details={details} kind="series" loading={detailsLoading} />
+          <MediaDetailLists key={detailsRow.arrId} details={details} kind="series" loading={detailsLoading} />
         </section>
       ) : null}
     </div>
@@ -432,6 +434,15 @@ function SonarrFilters({
   const activePending = columnFilters.find((filter) => filter.id === "pendingFunCandidates")?.value;
   const activeStatus = columnFilters.find((filter) => filter.id === "status")?.value;
   const activeMonitored = columnFilters.find((filter) => filter.id === "monitored")?.value;
+  const activeProfile = String(columnFilters.find((filter) => filter.id === "qualityProfileName")?.value ?? "");
+  const activeFunState = columnFilters.some((filter) => filter.id === "nonFunFiles" && filter.value === "positive")
+    ? "missingFun"
+    : columnFilters.some((filter) => filter.id === "funFiles" && filter.value === "positive") ? "hasFun" : "";
+  const activeFlags = activeStatus === "searchable" ? "searchableNow"
+    : activeStatus === "cooldown" ? "blockedByCooldown"
+    : activeStatus === "failed" ? "failedLastSearch"
+    : columnFilters.some((filter) => filter.id === "files" && filter.value === "positive") ? "hasFiles"
+    : activeMonitored === true ? "monitored" : "";
 
   function toggleFilter(columnId: string, value: TableFilterValue, exclusiveColumns: string[] = [columnId]) {
     let next = columnFilters;
@@ -455,6 +466,7 @@ function SonarrFilters({
       <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-white/[0.08]" />
       <FilterSelect
         label="FuN state"
+        value={activeFunState}
         onChange={(value) => {
           let next = updateColumnFilter(columnFilters, "funFiles", "");
           next = updateColumnFilter(next, "nonFunFiles", "");
@@ -470,6 +482,7 @@ function SonarrFilters({
       />
       <FilterSelect
         label="Flags"
+        value={activeFlags}
         onChange={(value) => {
           let next = updateColumnFilter(columnFilters, "monitored", "");
           next = updateColumnFilter(next, "files", "");
@@ -490,9 +503,10 @@ function SonarrFilters({
           ["failedLastSearch", "Failed last search"],
         ]}
       />
-      {qualityProfileNames.length > 0 && (
+      {(qualityProfileNames.length > 0 || activeProfile) && (
         <FilterSelect
           label="Quality profile"
+          value={activeProfile}
           onChange={(value) => onColumnFiltersChange(updateColumnFilter(columnFilters, "qualityProfileName", value))}
           options={[["", "All profiles"], ...qualityProfileNames.map((n): [string, string] => [n, n])]}
         />
@@ -524,10 +538,12 @@ export function FilterSelect({
   label,
   onChange,
   options,
+  value,
 }: {
   label: string;
   onChange: (value: string) => void;
   options: Array<[string, string]>;
+  value: string;
 }) {
   return (
     <label className="block">
@@ -535,7 +551,9 @@ export function FilterSelect({
       <select
         className="h-8 rounded-md border border-white/[0.09] bg-white/[0.02] px-2.5 text-[12px] font-medium text-ink-300 outline-none transition-[background-color,border-color] duration-150 ease-out hover:bg-white/[0.06] focus:border-signal-cyan/60 focus:ring-2 focus:ring-signal-cyan/25"
         onChange={(event) => onChange(event.target.value)}
+        value={value}
       >
+        {value && !options.some(([optionValue]) => optionValue === value) ? <option value={value}>{value}</option> : null}
         {options.map(([value, text]) => (
           <option key={value || text} value={value}>
             {text}

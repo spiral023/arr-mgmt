@@ -1,5 +1,7 @@
 import { clsx } from "clsx";
+import { useState } from "react";
 import type { MediaItemDetails, NonFunFileView } from "../../shared/ipc-contracts";
+import { invokeIpc } from "../state/ipc-client";
 
 export function MediaDetailLists({
   details,
@@ -10,27 +12,42 @@ export function MediaDetailLists({
   kind: "series" | "movie";
   loading: boolean;
 }) {
+  const [snapshot, setSnapshot] = useState<{ source: MediaItemDetails; result: MediaItemDetails } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const current = snapshot?.source === details ? snapshot.result : details;
+  const refresh = async () => {
+    if (!details || refreshing) return;
+    setRefreshing(true);
+    setRefreshError(null);
+    try {
+      const result = await invokeIpc<MediaItemDetails>("library:refreshTransfers", { kind, arrId: details.arrId });
+      setSnapshot({ source: details, result });
+    } catch {
+      setRefreshError("Status konnte nicht aktualisiert werden. Der letzte bekannte Stand bleibt sichtbar.");
+    } finally { setRefreshing(false); }
+  };
   const missingTitle = kind === "series" ? "Fehlende FuN*-Folgen" : "Fehlende FuN*-Datei";
   const missingEmpty = kind === "series" ? "Keine Non-FuN*-Folgen gefunden." : "Keine Non-FuN*-Datei gefunden.";
 
   return (
     <div className="mt-4 grid gap-4 lg:grid-cols-2">
-      <DetailList count={details?.nonFunFiles.length ?? 0} emptyText={missingEmpty} loading={loading} title={missingTitle}>
-        {details?.nonFunFiles.map((file, index) => (
+      <DetailList count={current?.nonFunFiles.length ?? 0} emptyText={missingEmpty} loading={loading} title={missingTitle}>
+        {current?.nonFunFiles.map((file) => (
           <ListItem
-            key={`${file.childArrId}-${index}`}
+            key={file.childArrId}
             meta={[file.quality, file.releaseGroup, formatBytes(file.sizeBytes)]}
             title={formatFileLabel(file, kind)}
           />
         ))}
       </DetailList>
       <DetailList
-        count={details?.candidates.length ?? 0}
+        count={current?.candidates.length ?? 0}
         emptyText="Noch keine Kandidaten gespeichert. Zuerst einen FuN*-Search ausführen."
         loading={loading}
         title="Beim Search gefunden"
       >
-        {details?.candidates.map((candidate) => (
+        {current?.candidates.map((candidate) => (
           <ListItem
             key={candidate.id}
             meta={[
@@ -44,9 +61,44 @@ export function MediaDetailLists({
           />
         ))}
       </DetailList>
+      <DetailList count={current?.files?.length ?? 0} emptyText="Noch keine technischen Dateidaten analysiert." loading={loading} title="Dateien und Bitraten">
+        {current?.files?.map((file) => (
+          <ListItem key={file.childArrId} title={formatFileLabel(file, kind)} meta={[
+            file.releaseGroup, file.mediaInfo?.videoCodec, file.mediaInfo?.resolution, file.mediaInfo?.audioLanguages,
+            file.mediaInfo?.totalBitrateMbps != null ? `${file.mediaInfo.totalBitrateMbps.toFixed(2)} Mbit/s gesamt` : "Bitrate unbekannt",
+            file.mediaInfo?.megabytesPerMinute != null ? `${file.mediaInfo.megabytesPerMinute.toFixed(1)} MB/min` : null,
+            file.mediaInfo?.videoBitrateMbps != null ? `${file.mediaInfo.videoBitrateMbps.toFixed(2)} Mbit/s Video` : null,
+          ]} />
+        ))}
+      </DetailList>
+      <div className="rounded-lg border border-white/[0.07] bg-ink-950/50 p-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <h3 className="text-[13px] font-semibold text-ink-200">Download und Import</h3>
+          <button type="button" onClick={() => void refresh()} disabled={refreshing || loading || !details || !current?.transfers?.length}
+            className="rounded-md border border-white/10 px-3 py-2 text-[12px] text-ink-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-signal-cyan disabled:opacity-50">
+            {refreshing ? "Prüfe Status…" : "Status prüfen"}
+          </button>
+        </div>
+        <p className="mb-2 text-[12px] text-ink-500">Ein Grab bestätigt die Übergabe. Erst die ARR-Historie bestätigt den Import.</p>
+        {refreshError ? <p role="alert" className="mb-2 text-[12px] text-signal-amber">{refreshError}</p> : null}
+        <ul aria-live="polite" className="flex max-h-72 flex-col gap-1.5 overflow-y-auto">
+          {current?.transfers?.map((transfer) => (
+            <ListItem key={transfer.id} title={transfer.title} meta={[
+              transferLabels[transfer.status], transfer.message,
+              transfer.checkedAt ? `Geprüft ${new Date(transfer.checkedAt).toLocaleString()}` : "Noch nicht geprüft",
+            ]} tone={transfer.status === "failed" || transfer.status === "unknown" ? "warning" : "default"} />
+          ))}
+        </ul>
+        {!current?.transfers?.length ? <p className="text-[13px] text-ink-500">Neue Grabs werden hier nachverfolgt.</p> : null}
+      </div>
     </div>
   );
 }
+
+const transferLabels = {
+  grabbed: "An ARR übergeben", downloading: "Download läuft", importing: "Import ausstehend",
+  imported: "Import bestätigt", failed: "Fehlgeschlagen", unknown: "Status unbekannt",
+};
 
 function DetailList({
   children,

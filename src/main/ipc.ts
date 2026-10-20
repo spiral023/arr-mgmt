@@ -1,8 +1,12 @@
 import { ipcMain, shell } from "electron";
+import { formatDateTime } from "../shared/date-time";
 import { filterOutExcluded } from "./media-overrides";
 import { analyzeRadarrMovies, analyzeSonarrSeries } from "./arr/analysis-service";
 import { RadarrClient } from "./arr/radarr-client";
-import { selectSonarrSeriesForAnalysis } from "./arr/sonarr-analysis-plan";
+import { selectAnalysisItems, changedItemIds } from "./arr/analysis-plan";
+import { refreshTransfers, getWanted } from "./arr/library-service";
+import { extractDownloadId } from "./arr/download-id";
+import { resolveGrabTarget } from "./arr/grab-selection";
 import { SonarrClient } from "./arr/sonarr-client";
 import { getNonFunEpisodeIds, getNonFunMovieIds, selectBestFunRelease } from "./arr/sonarr-operations";
 import type { ArrRelease } from "./arr/arr-types";
@@ -89,6 +93,14 @@ function describeRejectedFunReleases(releases: ArrRelease[]): string {
 }
 
 export function registerIpcHandlers(state: IpcState): void {
+  ipcMain.handle("scheduler:getState", () => ({ paused: state.scheduler.isPaused() }));
+  ipcMain.handle("scheduler:setPaused", (_event, payload: unknown) => {
+    if (!payload || typeof payload !== "object" || !("paused" in payload) || typeof payload.paused !== "boolean") {
+      throw new Error("paused must be a boolean");
+    }
+    state.scheduler.setPaused(payload.paused);
+    return { paused: state.scheduler.isPaused() };
+  });
   ipcMain.handle("jobs:list", (): JobView[] => state.jobRunner.listJobs());
   ipcMain.handle("jobs:events", (_event, payload: unknown): JobEventView[] => {
     const jobId =
@@ -178,6 +190,20 @@ export function registerIpcHandlers(state: IpcState): void {
   ipcMain.handle("library:itemDetails", (_event, payload: unknown) => {
     const input = assertItemDetailsInput(payload);
     return state.repositories.mediaItems.itemDetails(input.kind, input.arrId);
+  });
+  ipcMain.handle("library:refreshTransfers", async (_event, payload: unknown) => {
+    const input = assertItemDetailsInput(payload);
+    await refreshTransfers(state, input.kind === "series" ? "sonarr" : "radarr");
+    return state.repositories.mediaItems.itemDetails(input.kind, input.arrId);
+  });
+  ipcMain.handle("library:wanted", (_event, payload: unknown) => {
+    if (!payload || typeof payload !== "object") throw new Error("Wanted query is required");
+    const { kind, mode, page = 1, pageSize = 20 } = payload as Record<string, unknown>;
+    if ((kind !== "sonarr" && kind !== "radarr") || (mode !== "missing" && mode !== "cutoff") ||
+      !Number.isSafeInteger(page) || Number(page) < 1 || !Number.isSafeInteger(pageSize) || Number(pageSize) < 1 || Number(pageSize) > 100) {
+      throw new Error("Invalid wanted query");
+    }
+    return getWanted(state, kind, mode, Number(page), Number(pageSize));
   });
   ipcMain.handle("media:setOverride", (_event, payload: unknown): ArrActionResult => {
     const input = assertMediaOverrideInput(payload);
@@ -370,31 +396,31 @@ export function registerIpcHandlers(state: IpcState): void {
 export function createProductionAutomationRunner(state: Pick<IpcState, "instanceStore" | "jobRunner" | "repositories">): AutomationRunner {
   const clients: AutomationArrClients = {
     sonarr: {
-      getStatus: () => {
+      getStatus: (signal) => {
         const config = state.instanceStore.getWithApiKey("sonarr");
-        return new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).getStatus();
+        return new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal }).getStatus();
       },
-      getReleasesForEpisode: (episodeId) => {
+      getReleasesForEpisode: (episodeId, signal) => {
         const config = state.instanceStore.getWithApiKey("sonarr");
-        return new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).getReleasesForEpisode(episodeId);
+        return new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal }).getReleasesForEpisode(episodeId);
       },
-      grabRelease: async (release) => {
+      grabRelease: async (release, signal) => {
         const config = state.instanceStore.getWithApiKey("sonarr");
-        await new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).grabRelease(release);
+        return new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal }).grabRelease(release);
       },
     },
     radarr: {
-      getStatus: () => {
+      getStatus: (signal) => {
         const config = state.instanceStore.getWithApiKey("radarr");
-        return new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).getStatus();
+        return new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal }).getStatus();
       },
-      getReleasesForMovie: (movieId) => {
+      getReleasesForMovie: (movieId, signal) => {
         const config = state.instanceStore.getWithApiKey("radarr");
-        return new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).getReleasesForMovie(movieId);
+        return new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal }).getReleasesForMovie(movieId);
       },
-      grabRelease: async (release) => {
+      grabRelease: async (release, signal) => {
         const config = state.instanceStore.getWithApiKey("radarr");
-        await new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey }).grabRelease(release);
+        return new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal }).grabRelease(release);
       },
     },
   };
@@ -418,23 +444,23 @@ function getAutomationRunner(state: IpcState): AutomationRunner {
   return state.automationRunner;
 }
 
-export function enqueueSonarrAnalysis(state: IpcState, name = "Analyze Sonarr", seriesIds?: number[], sampleSize?: number) {
+export function enqueueSonarrAnalysis(state: IpcState, name = "Analyze Sonarr", seriesIds?: number[], sampleSize?: number, forceRefresh = false) {
   return state.jobRunner.enqueue({
     name,
     kind: "analysis",
     target: seriesIds && seriesIds.length > 0 ? "selected" : "sonarr",
     progressTotal: seriesIds?.length,
-    run: async (context) => analyzeSonarrLibrary(state, context, seriesIds, sampleSize),
+    run: async (context) => analyzeSonarrLibrary(state, context, seriesIds, sampleSize, forceRefresh),
   });
 }
 
-export function enqueueRadarrAnalysis(state: IpcState, name = "Analyze Radarr", movieIds?: number[], sampleSize?: number) {
+export function enqueueRadarrAnalysis(state: IpcState, name = "Analyze Radarr", movieIds?: number[], sampleSize?: number, forceRefresh = false) {
   return state.jobRunner.enqueue({
     name,
     kind: "analysis",
     target: movieIds && movieIds.length > 0 ? "selected" : "radarr",
     progressTotal: movieIds?.length,
-    run: async (context) => analyzeRadarrLibrary(state, context, movieIds, sampleSize),
+    run: async (context) => analyzeRadarrLibrary(state, context, movieIds, sampleSize, forceRefresh),
   });
 }
 
@@ -573,20 +599,24 @@ export function enqueueCombinedJob(
   });
 }
 
-async function analyzeSonarrLibrary(state: IpcState, context: JobContext, seriesIds?: number[], sampleSize?: number): Promise<void> {
+async function analyzeSonarrLibrary(state: IpcState, context: JobContext, seriesIds?: number[], sampleSize?: number, forceRefresh = false): Promise<void> {
+  const analyzedAt = new Date();
   const config = state.instanceStore.getWithApiKey("sonarr");
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
-  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
-  const [seriesList, qualityProfiles] = await Promise.all([client.getSeries(), client.getQualityProfiles().catch(() => [])]);
+  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal: context.signal });
+  const [seriesList, qualityProfiles] = await Promise.all([
+    seriesIds?.length ? mapConcurrent([...new Set(seriesIds)], ANALYSIS_CONCURRENCY, (id) => client.getSeriesById(id)) : client.getSeries(),
+    client.getQualityProfiles().catch(() => []),
+  ]);
   const qualityProfileMap = new Map(qualityProfiles.map((p) => [p.id, p.name]));
   const requestedSeriesIds = seriesIds && seriesIds.length > 0 ? new Set(seriesIds) : undefined;
   const matchingSeries = requestedSeriesIds ? seriesList.filter((series) => requestedSeriesIds.has(series.id)) : seriesList;
-  const analyzedArrIds = new Set(state.repositories.mediaItems.listAnalyzedArrIds("series", instanceId));
-  const seriesToAnalyze = (requestedSeriesIds ? matchingSeries : selectSonarrSeriesForAnalysis(matchingSeries, analyzedArrIds)).slice(
+  const plan = requestedSeriesIds ? matchingSeries : await planIncrementalAnalysis(state, context, client, "sonarr", instanceId, matchingSeries, forceRefresh);
+  const seriesToAnalyze = plan.slice(
     0,
     sampleSize && sampleSize > 0 ? sampleSize : undefined,
   );
-  const analyzedAt = new Date();
+  let failures = 0;
 
   context.setProgressTotal(seriesToAnalyze.length);
   if (requestedSeriesIds) {
@@ -618,6 +648,8 @@ async function analyzeSonarrLibrary(state: IpcState, context: JobContext, series
       });
       context.incrementProgress();
     } catch (error) {
+      context.throwIfCancelled();
+      failures++;
       state.repositories.activityLog.insert({
         action: "analysis",
         quotaType: "none",
@@ -628,24 +660,33 @@ async function analyzeSonarrLibrary(state: IpcState, context: JobContext, series
       });
       context.incrementProgress({ failed: true });
     }
-  });
+  }, { yieldEvery: 1 });
+  if (!requestedSeriesIds && !sampleSize && failures === 0) {
+    state.repositories.mediaItems.reconcileCatalog("series", instanceId, seriesList.map((item) => item.id));
+    saveAnalysisCursor(state, "sonarr", config.baseUrl, analyzedAt);
+  }
+  await refreshTransferStatesAfterAnalysis(state, context, "sonarr");
   state.repositories.stats.recordCoverageSnapshot(new Date());
 }
 
-async function analyzeRadarrLibrary(state: IpcState, context: JobContext, movieIds?: number[], sampleSize?: number): Promise<void> {
+async function analyzeRadarrLibrary(state: IpcState, context: JobContext, movieIds?: number[], sampleSize?: number, forceRefresh = false): Promise<void> {
+  const analyzedAt = new Date();
   const config = state.instanceStore.getWithApiKey("radarr");
   const instanceId = upsertRuntimeInstance(state, "radarr", config);
-  const client = new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
-  const [movies, radarrQualityProfiles] = await Promise.all([client.getMovies(), client.getQualityProfiles().catch(() => [])]);
+  const client = new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal: context.signal });
+  const [movies, radarrQualityProfiles] = await Promise.all([
+    movieIds?.length ? mapConcurrent([...new Set(movieIds)], ANALYSIS_CONCURRENCY, (id) => client.getMovie(id)) : client.getMovies(),
+    client.getQualityProfiles().catch(() => []),
+  ]);
   const radarrQualityProfileMap = new Map(radarrQualityProfiles.map((p) => [p.id, p.name]));
   const requestedMovieIds = movieIds && movieIds.length > 0 ? new Set(movieIds) : undefined;
   const matchingMovies = requestedMovieIds ? movies.filter((movie) => requestedMovieIds.has(movie.id)) : movies;
-  const analyzedArrIds = new Set(state.repositories.mediaItems.listAnalyzedArrIds("movie", instanceId));
-  const moviesToAnalyze = (requestedMovieIds ? matchingMovies : matchingMovies.filter((movie) => !analyzedArrIds.has(movie.id))).slice(
+  const plan = requestedMovieIds ? matchingMovies : await planIncrementalAnalysis(state, context, client, "radarr", instanceId, matchingMovies, forceRefresh);
+  const moviesToAnalyze = plan.slice(
     0,
     sampleSize && sampleSize > 0 ? sampleSize : undefined,
   );
-  const analyzedAt = new Date();
+  let failures = 0;
 
   context.setProgressTotal(moviesToAnalyze.length);
   context.addEvent("info", `Loaded ${moviesToAnalyze.length} Radarr movies`);
@@ -666,6 +707,8 @@ async function analyzeRadarrLibrary(state: IpcState, context: JobContext, movieI
       });
       context.incrementProgress();
     } catch (error) {
+      context.throwIfCancelled();
+      failures++;
       state.repositories.activityLog.insert({
         action: "analysis",
         quotaType: "none",
@@ -677,13 +720,54 @@ async function analyzeRadarrLibrary(state: IpcState, context: JobContext, movieI
       context.incrementProgress({ failed: true });
     }
   }, { yieldEvery: RADARR_ANALYSIS_YIELD_EVERY });
+  if (!requestedMovieIds && !sampleSize && failures === 0) {
+    state.repositories.mediaItems.reconcileCatalog("movie", instanceId, movies.map((item) => item.id));
+    saveAnalysisCursor(state, "radarr", config.baseUrl, analyzedAt);
+  }
+  await refreshTransferStatesAfterAnalysis(state, context, "radarr");
   state.repositories.stats.recordCoverageSnapshot(new Date());
+}
+
+function analysisCursorKey(kind: InstanceKind, baseUrl: string): string {
+  return `analysis.cursor.${kind}.${baseUrl.replace(/\/+$/, "")}`;
+}
+async function refreshTransferStatesAfterAnalysis(state: IpcState, context: JobContext, kind: InstanceKind) {
+  context.throwIfCancelled();
+  try { await refreshTransfers(state, kind, context.signal); }
+  catch {
+    context.throwIfCancelled();
+    context.addEvent("warning", "Download/import status could not be refreshed; last known status retained");
+  }
+}
+function saveAnalysisCursor(state: IpcState, kind: InstanceKind, baseUrl: string, now: Date) {
+  state.repositories.settings.set(analysisCursorKey(kind, baseUrl), now.toISOString());
+}
+async function planIncrementalAnalysis<T extends { id: number }>(
+  state: IpcState, context: JobContext, client: SonarrClient | RadarrClient, kind: InstanceKind, instanceId: number, items: T[], forceRefresh = false,
+): Promise<T[]> {
+  const stored = state.repositories.mediaItems.analysisState(kind === "sonarr" ? "series" : "movie", instanceId);
+  const config = state.instanceStore.getWithApiKey(kind);
+  const now = new Date();
+  const cursor = state.repositories.settings.get<string | null>(analysisCursorKey(kind, config.baseUrl), null);
+  let changed = new Set<number>();
+  let forceFull = forceRefresh || !cursor || !Number.isFinite(Date.parse(cursor)) || Date.parse(cursor) > now.getTime() || now.getTime() - Date.parse(cursor) > 7 * 86_400_000;
+  if (!forceFull) {
+    try {
+      changed = changedItemIds(await client.getHistorySince(new Date(Date.parse(cursor!) - 120_000).toISOString()), kind);
+    } catch {
+      context.addEvent("warning", "History unavailable; refreshing the complete library instead of trusting stale analysis");
+      forceFull = true;
+    }
+  }
+  const selected = selectAnalysisItems(items, stored, changed, now, forceFull);
+  context.addEvent("info", `Analysis refresh: ${selected.length}/${items.length} titles; full reconciliation after 24 hours`);
+  return selected;
 }
 
 async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesActionInput, context: JobContext): Promise<void> {
   const config = state.instanceStore.getWithApiKey("sonarr");
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
-  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal: context.signal });
   const quota = createQuotaService(state);
   const settings = getAppSettings(state.repositories);
   const seriesEpisodes = await mapConcurrent(input.seriesIds, EPISODE_LOAD_CONCURRENCY, async (seriesId) => {
@@ -781,6 +865,7 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
       errors += 1;
       const message = error instanceof Error ? error.message : String(error);
       quota.complete(reservation.activityId!, "failed", message);
+      context.throwIfCancelled();
       if (detailLogged < SEARCH_DEBUG_DETAIL_CAP) {
         detailLogged += 1;
         context.addEvent("error", `Episode ${task.episodeId} search failed: ${message}`);
@@ -796,32 +881,6 @@ async function searchSonarrCandidates(state: IpcState, input: SonarrSeriesAction
     `Search summary — searched ${searched}, skipped by cooldown ${skippedByCooldown}, errors ${errors}; ` +
       `${withReleases} returned releases, ${withFunGroup} had a FuN* release, ${onlyRejectedFun} had only non-grabbable FuN* releases; stored ${candidatesFound} candidates.`,
   );
-}
-
-type GrabTarget = { release: ArrRelease; strategy: "guid" | "title" | "best-fun" };
-
-/**
- * Resolves which freshly-fetched release to grab for a stored candidate. Sonarr/Radarr only let you
- * grab a release that is still in their short-lived server-side release cache, so we re-query the
- * indexer at grab time and re-match the stored candidate against the current results. We prefer the
- * exact same release (guid, then title), but fall back to the best currently-offered FuN* release so
- * a day-old candidate can still be grabbed as long as a suitable release is on the indexer.
- */
-function resolveGrabTarget(fresh: ArrRelease[], stored: ArrRelease): GrabTarget | undefined {
-  if (stored.guid) {
-    const byGuid = fresh.find((item) => item.guid === stored.guid);
-    if (byGuid) {
-      return { release: byGuid, strategy: "guid" };
-    }
-  }
-  if (stored.title) {
-    const byTitle = fresh.find((item) => item.title === stored.title);
-    if (byTitle) {
-      return { release: byTitle, strategy: "title" };
-    }
-  }
-  const best = selectBestFunRelease(fresh);
-  return best ? { release: best, strategy: "best-fun" } : undefined;
 }
 
 /** Monotonic high-resolution clock for sub-task timing, in milliseconds. */
@@ -907,6 +966,7 @@ async function grabStoredCandidates(params: GrabLoopParams): Promise<void> {
     try {
       prefetched = await prefetch(candidates, recordPerf);
     } catch (error) {
+      context.throwIfCancelled();
       const message = error instanceof Error ? error.message : String(error);
       context.addEvent("warning", `Batch pre-fetch failed (${message}); falling back to per-${childNoun} queries`);
     }
@@ -951,7 +1011,7 @@ async function grabStoredCandidates(params: GrabLoopParams): Promise<void> {
         try {
           // Prefer the batch-prefetched result set; only re-query per item if it is missing or
           // does not contain a grabbable match for this candidate.
-          let target = resolveGrabTarget(prefetched.get(candidate.childArrId) ?? [], release);
+          let target = resolveGrabTarget(prefetched.get(candidate.childArrId) ?? [], release, "season");
           let matchedVia: "season batch" | "re-fetched" = "season batch";
           if (!target) {
             matchedVia = "re-fetched";
@@ -959,7 +1019,7 @@ async function grabStoredCandidates(params: GrabLoopParams): Promise<void> {
             const fresh = await refetch(candidate.childArrId);
             recordPerf({ operation: "refetch", childArrId: candidate.childArrId, outcome: "success", durationMs: nowMs() - refetchStart, detail: `${fresh.length} results` });
             context.throwIfCancelled();
-            target = resolveGrabTarget(fresh, release);
+            target = resolveGrabTarget(fresh, release, "item");
             if (!target) {
               throw new Error(
                 `No grabbable FuN* release among ${fresh.length} current results for ${childNoun} ${candidate.childArrId} ` +
@@ -975,7 +1035,14 @@ async function grabStoredCandidates(params: GrabLoopParams): Promise<void> {
             );
           }
           const grabStart = nowMs();
-          await grab(target.release);
+          context.throwIfCancelled();
+          const grabbedAt = new Date().toISOString();
+          const response = await grab(target.release);
+          if (candidate.mediaItemId != null) {
+            state.repositories.transfers.record({ instanceId, mediaItemId: candidate.mediaItemId,
+              childArrId: candidate.childArrId, title: grabbedLabel, grabbedAt,
+              downloadId: extractDownloadId(response) });
+          }
           recordPerf({ operation: "grab_post", childArrId: candidate.childArrId, strategy: target.strategy, outcome: "success", durationMs: nowMs() - grabStart });
           state.repositories.releaseCandidates.delete(candidate.id);
           quota.complete(reservation.activityId!, "success", grabbedLabel);
@@ -989,6 +1056,7 @@ async function grabStoredCandidates(params: GrabLoopParams): Promise<void> {
           }
           const message = error instanceof Error ? error.message : String(error);
           quota.complete(reservation.activityId!, "failed", message);
+          context.throwIfCancelled();
           recordPerf({ operation: "grab_total", childArrId: candidate.childArrId, outcome: "failed", durationMs: nowMs() - startedMs, detail: message });
           context.addEvent("error", `Failed to grab "${releaseLabel}": ${message}`);
           context.incrementProgress({ failed: true });
@@ -1027,6 +1095,7 @@ async function loadEpisodeSeasonMap(
 ): Promise<EpisodeSeasonMap> {
   const map: EpisodeSeasonMap = new Map();
   await mapConcurrent(seriesArrIds, EPISODE_LOAD_CONCURRENCY, async (seriesId) => {
+    context.throwIfCancelled();
     try {
       const episodes = await client.getEpisodes(seriesId, false);
       for (const episode of episodes) {
@@ -1035,6 +1104,7 @@ async function loadEpisodeSeasonMap(
         }
       }
     } catch (error) {
+      context.throwIfCancelled();
       const message = error instanceof Error ? error.message : String(error);
       context.addEvent("warning", `Could not load episodes for series ${seriesId} (${message}); season batching disabled for it`);
     }
@@ -1093,6 +1163,7 @@ async function prefetchSonarrSeasons(
         `Season pre-fetch: series ${group.seriesId} season ${group.seasonNumber} → ${results.length} releases covering ${group.episodeIds.length} candidate(s)`,
       );
     } catch (error) {
+      context.throwIfCancelled();
       const message = error instanceof Error ? error.message : String(error);
       recordPerf({ operation: "season_refetch", outcome: "failed", durationMs: nowMs() - start, detail: message });
       context.addEvent(
@@ -1108,7 +1179,7 @@ async function prefetchSonarrSeasons(
 async function grabSonarrCandidates(state: IpcState, input: SonarrSeriesActionInput, context: JobContext): Promise<void> {
   const config = state.instanceStore.getWithApiKey("sonarr");
   const instanceId = upsertRuntimeInstance(state, "sonarr", config);
-  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  const client = new SonarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal: context.signal });
   const quota = createQuotaService(state);
   context.addEvent(
     "info",
@@ -1151,11 +1222,11 @@ async function grabSonarrCandidates(state: IpcState, input: SonarrSeriesActionIn
 async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionInput, context: JobContext): Promise<void> {
   const config = state.instanceStore.getWithApiKey("radarr");
   const instanceId = upsertRuntimeInstance(state, "radarr", config);
-  const client = new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  const client = new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal: context.signal });
   const quota = createQuotaService(state);
   const settings = getAppSettings(state.repositories);
   const movieSet = new Set(input.movieIds);
-  const movies = (await client.getMovies()).filter((movie) => movieSet.has(movie.id));
+  const movies = await mapConcurrent([...movieSet], ANALYSIS_CONCURRENCY, (id) => client.getMovie(id));
   const movieTasks = getNonFunMovieIds(movies).map((movieId) => ({
     mediaItemId: state.repositories.mediaItems.findIdByArrId("movie", movieId, instanceId),
     movieId,
@@ -1248,6 +1319,7 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
       errors += 1;
       const message = error instanceof Error ? error.message : String(error);
       quota.complete(reservation.activityId!, "failed", message);
+      context.throwIfCancelled();
       if (detailLogged < SEARCH_DEBUG_DETAIL_CAP) {
         detailLogged += 1;
         context.addEvent("error", `Movie ${task.movieId} search failed: ${message}`);
@@ -1268,7 +1340,7 @@ async function searchRadarrCandidates(state: IpcState, input: RadarrMovieActionI
 async function grabRadarrCandidates(state: IpcState, input: RadarrMovieActionInput, context: JobContext): Promise<void> {
   const config = state.instanceStore.getWithApiKey("radarr");
   const instanceId = upsertRuntimeInstance(state, "radarr", config);
-  const client = new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
+  const client = new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, signal: context.signal });
   const quota = createQuotaService(state);
   context.addEvent(
     "info",
@@ -1344,7 +1416,7 @@ export async function registerPersistedAutomationGoals(state: IpcState): Promise
   for (const goal of state.repositories.automationGoals.list()) {
     registerAutomationGoalSchedule(state, goal);
   }
-  await getAutomationRunner(state).runEligible("startup");
+  if (!state.scheduler.isPaused()) await getAutomationRunner(state).runEligible("startup");
 }
 
 function registerAutomationGoalSchedule(state: IpcState, goal: AutomationGoalView): void {
@@ -1765,12 +1837,6 @@ function assertRunCombinedInput(payload: unknown): RunCombinedInput {
     throw new Error("target 'selected' requires at least one seriesId or movieId");
   }
   return result;
-}
-
-function formatDateTime(value: string | undefined): string {
-  if (!value || value === "-") return "-";
-  const date = new Date(value);
-  return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
 export function formatSonarrRowDates(row: ReturnType<IpcState["repositories"]["mediaItems"]["listSonarrRows"]>[number]) {

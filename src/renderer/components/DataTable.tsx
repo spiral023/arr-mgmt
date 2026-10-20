@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useMemo, useRef, useState } from "react";
+import { useDeferredValue, useMemo, useRef, useState } from "react";
 import type {
   Column,
   ColumnDef,
@@ -104,6 +104,7 @@ export function DataTable<TData extends object>({
 
   const resolvedColumnFilters = columnFilters ?? internalColumnFilters;
   const resolvedGlobalFilter = globalFilter ?? internalGlobalFilter;
+  const deferredGlobalFilter = useDeferredValue(resolvedGlobalFilter);
   const resolvedRowSelection = rowSelection ?? internalRowSelection;
   const resolvedSorting = sorting ?? internalSorting;
 
@@ -140,7 +141,7 @@ export function DataTable<TData extends object>({
     state: {
       columnFilters: resolvedColumnFilters,
       columnVisibility,
-      globalFilter: resolvedGlobalFilter,
+      globalFilter: deferredGlobalFilter,
       rowSelection: resolvedRowSelection,
       sorting: resolvedSorting,
     },

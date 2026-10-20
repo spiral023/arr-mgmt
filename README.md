@@ -1,5 +1,8 @@
 # ARR Ops
 
+Aktuelle Version: **0.1.2**. Änderungen und isolierte Release-Prüfung:
+[Release 0.1.2](docs/release-0.1.2.md).
+
 ARR Ops ist eine lokale Electron-App fuer haeufige Sonarr- und Radarr-Aufgaben. Der erste Fokus ist FuN*-Coverage: Serien analysieren, den Anteil von FuN-Releasegruppen sehen, passende FuN*-Kandidaten suchen und gefundene Kandidaten kontrolliert grabben.
 
 API-Keys werden in der App gespeichert und ueber Electron `safeStorage` verschluesselt. Die lokale `.env` ist nur fuer Entwickler- und Live-Tests gedacht und wird nicht versioniert.
@@ -12,6 +15,11 @@ API-Keys werden in der App gespeichert und ueber Electron `safeStorage` verschlu
 - Sortierbare und filterbare Sonarr-Tabelle mit sticky KPI-/Menueleiste und sticky Tabellenkopf.
 - Suche nach FuN*-Kandidaten fuer ausgewaehlte Sonarr-Serien.
 - Grab von zuvor gefundenen FuN*-Kandidaten fuer ausgewaehlte Sonarr-Serien.
+- Inkrementelle Sonarr-/Radarr-Analyse mit erneuter Vollpruefung nach 24 Stunden beim naechsten Analyselauf und gezielten Einzelabrufen.
+- Technische Dateidetails mit Codec, Aufloesung, Audiosprachen, Gesamtbitrate und MB/min; unbekannte Werte bleiben unbekannt.
+- Download-/Importverfolgung fuer neue Grabs, inklusive expliziter Statuspruefung im Detailbereich.
+- Lesende ARR-Arbeitslisten fuer verfuegbare fehlende Dateien und unterschrittene Qualitaetsziele.
+- Eindeutige externe IDs und neue Diagnosebefehle; Details in [src/cli/README.md](src/cli/README.md).
 - Tray-Icon und Windows-Notifications fuer Hintergrundbetrieb und Job-Ergebnisse.
 - Grundlagen fuer Quoten, Zeitplaene, lokale Historie und Radarr-Erweiterungen sind vorbereitet.
 
@@ -121,7 +129,7 @@ npm run dist:win
 Der Standard-Build schreibt nach `release` und erzeugt:
 
 ```text
-release\ARR Ops 0.1.0.exe
+release\ARR Ops 0.1.2.exe
 ```
 
 Wenn Windows eine alte Ausgabe sperrt, z. B. weil die App noch laeuft oder ein Explorer-Fenster Dateien haelt, App schliessen und den Build erneut starten. Alternativ kann ein anderer Output-Ordner genutzt werden:
@@ -134,7 +142,7 @@ npx electron-builder --win portable --x64 --config.directories.output=release-fi
 Die EXE liegt dann z. B. unter:
 
 ```text
-release-fixed\ARR Ops 0.1.0.exe
+release-fixed\ARR Ops 0.1.2.exe
 ```
 
 Gepackte Electron-App gegen IPC und Live-Sonarr testen:
@@ -155,5 +163,7 @@ npx electron-builder --win portable --x64 --config.directories.output=release-fi
 Die portable EXE liegt danach z. B. unter:
 
 ```text
-release-fixed\ARR Ops 0.1.0.exe
+release-fixed\ARR Ops 0.1.2.exe
 ```
+
+Performance-Messungen und Änderungen in Version 0.1.1: [docs/performance.md](docs/performance.md).

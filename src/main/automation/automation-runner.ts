@@ -184,6 +184,10 @@ export class AutomationRunner {
       this.insertEvent(goalId, run.id, "info", `Execution adapter completed ${completed} work items`, this.now());
       return this.finishRun(run, "completed", completed, actionableItems.length);
     } catch (error) {
+      if (context?.isCancelled()) {
+        this.insertEvent(goalId, run.id, "warning", "Run cancelled; already submitted grabs remain observable", this.now());
+        return this.finishRun(run, "cancelled", run.progressCurrent, run.progressTotal);
+      }
       if (error instanceof AutomationQuotaSafetyError) {
         const eligibleAt = nextQuotaEligibleAt(this.now(), 24);
         this.repositories.automationGoals.markRunResult(goalId, {

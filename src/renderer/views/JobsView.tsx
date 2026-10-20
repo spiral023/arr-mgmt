@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { formatDateTime } from "../../shared/date-time";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Ban, Check, ChevronDown, Copy, RotateCcw } from "lucide-react";
 import { DataTable } from "../components/DataTable";
@@ -11,13 +13,16 @@ import type { JobEventView, JobStatus, JobView } from "../../shared/ipc-contract
 interface JobRow {
   actions: string;
   duration: string;
+  durationSeconds?: number;
   failure: number;
   finished: string;
+  finishedTimestamp?: number;
   id: string;
   job: string;
   progressCurrent: number;
   progressTotal: number;
   started: string;
+  startedTimestamp?: number;
   status: JobStatus;
   success: number;
   target: string;
@@ -41,7 +46,8 @@ export function JobsView() {
   const expandedJobIdRef = useRef<string | null>(null);
 
   const refreshEvents = useCallback(async (jobId: string) => {
-    setEvents(await listJobEvents(jobId));
+    const nextEvents = await listJobEvents(jobId);
+    if (expandedJobIdRef.current === jobId) setEvents(nextEvents);
   }, []);
 
   const refreshJobs = useCallback(async () => {
@@ -122,9 +128,27 @@ export function JobsView() {
       },
       { accessorKey: "success", cell: ({ getValue }) => <Mono>{String(getValue<number>())}</Mono>, header: "Success", size: 96 },
       { accessorKey: "failure", cell: ({ getValue }) => <Mono>{String(getValue<number>())}</Mono>, header: "Failure", size: 96 },
-      { accessorKey: "started", cell: ({ getValue }) => <Mono>{getValue<string>()}</Mono>, header: "Started", size: 150 },
-      { accessorKey: "finished", cell: ({ getValue }) => <Mono>{getValue<string>()}</Mono>, header: "Finished", size: 150 },
-      { accessorKey: "duration", cell: ({ getValue }) => <Mono>{getValue<string>()}</Mono>, header: "Duration", size: 112 },
+      {
+        id: "started",
+        accessorFn: (row) => row.startedTimestamp === undefined ? undefined : row.started,
+        cell: ({ row }) => <Mono>{row.original.started}</Mono>,
+        header: "Started", size: 150, sortDescFirst: true, sortUndefined: "last",
+        sortingFn: (a, b) => (a.original.startedTimestamp ?? 0) - (b.original.startedTimestamp ?? 0),
+      },
+      {
+        id: "finished",
+        accessorFn: (row) => row.finishedTimestamp === undefined ? undefined : row.finished,
+        cell: ({ row }) => <Mono>{row.original.finished}</Mono>,
+        header: "Finished", size: 150, sortDescFirst: true, sortUndefined: "last",
+        sortingFn: (a, b) => (a.original.finishedTimestamp ?? 0) - (b.original.finishedTimestamp ?? 0),
+      },
+      {
+        id: "duration",
+        accessorFn: (row) => row.durationSeconds === undefined ? undefined : row.duration,
+        cell: ({ row }) => <Mono>{row.original.duration}</Mono>,
+        header: "Duration", size: 112, sortDescFirst: true, sortUndefined: "last",
+        sortingFn: (a, b) => (a.original.durationSeconds ?? 0) - (b.original.durationSeconds ?? 0),
+      },
       {
         cell: ({ row }) => (
           <div className="flex gap-2">
@@ -232,16 +256,40 @@ export function JobsView() {
             {activeJob ? <StatusPill tone={statusTone[activeJob.status]}>{activeJob.status}</StatusPill> : null}
           </div>
         </div>
-        <div className="mt-4 divide-y divide-white/10 rounded-md border border-white/10 bg-ink-950/60">
-          {activeEvents.map((event) => (
-            <div className="grid gap-2 px-3 py-3 text-sm md:grid-cols-[10rem_6rem_1fr]" key={`${event.createdAt}-${event.message}`}>
+        <JobEventList events={activeEvents} jobId={expandedJobId} />
+      </section>
+    </div>
+  );
+}
+
+function JobEventList({ events, jobId }: { events: JobEventView[]; jobId: string | null }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: events.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 76,
+    initialRect: { width: 800, height: 520 },
+    overscan: 6,
+  });
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    virtualizer.measure();
+  }, [jobId, virtualizer]);
+  return (
+    <div aria-label="Job events" className="mt-4 max-h-[32rem] overflow-auto rounded-md border border-white/10 bg-ink-950/60" ref={scrollRef} tabIndex={0}>
+      <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+        {virtualizer.getVirtualItems().map((item) => {
+          const event = events[item.index];
+          return (
+            <div className="absolute left-0 top-0 grid w-full gap-2 border-b border-white/10 px-3 py-3 text-sm md:grid-cols-[10rem_6rem_1fr]"
+              data-index={item.index} key={`${jobId}-${item.key}`} ref={virtualizer.measureElement} style={{ transform: `translateY(${item.start}px)` }}>
               <Mono>{formatDateTime(event.createdAt)}</Mono>
               <StatusPill tone={event.level === "error" ? "danger" : event.level === "warning" ? "warning" : "idle"}>{event.level}</StatusPill>
-              <span className="text-ink-200">{event.message}</span>
+              <span className="break-words text-ink-200">{event.message}</span>
             </div>
-          ))}
-        </div>
-      </section>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -251,16 +299,24 @@ function isFinished(status: JobStatus): boolean {
 }
 
 function toJobRow(job: JobView): JobRow {
+  const startedTimestamp = toTimestamp(job.startedAt);
+  const finishedTimestamp = toTimestamp(job.finishedAt);
+  const durationSeconds = startedTimestamp === undefined || (job.finishedAt && finishedTimestamp === undefined)
+    ? undefined
+    : Math.max(0, Math.floor(((finishedTimestamp ?? Date.now()) - startedTimestamp) / 1000));
   return {
     actions: job.kind,
-    duration: formatDuration(job.startedAt, job.finishedAt),
+    duration: formatDuration(durationSeconds),
+    durationSeconds,
     failure: job.failureCount,
     finished: formatDateTime(job.finishedAt),
+    finishedTimestamp,
     id: job.id,
     job: job.name,
     progressCurrent: job.progressCurrent,
     progressTotal: job.progressTotal,
     started: formatDateTime(job.startedAt),
+    startedTimestamp,
     status: job.status,
     success: job.successCount,
     target: job.target,
@@ -355,17 +411,13 @@ function buildAiLog(events: JobEventView[], job?: JobRow): string {
   return sections.join("\n");
 }
 
-function formatDateTime(value?: string) {
-  if (!value) return "-";
-  const date = new Date(value);
-  return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+function toTimestamp(value?: string): number | undefined {
+  const timestamp = value ? Date.parse(value) : NaN;
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
-function formatDuration(startedAt?: string, finishedAt?: string) {
-  if (!startedAt) return "-";
-  const start = new Date(startedAt).getTime();
-  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
-  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+function formatDuration(seconds?: number) {
+  if (seconds === undefined) return "-";
   const minutes = Math.floor(seconds / 60);
   const restSeconds = seconds % 60;
   return `${String(minutes).padStart(2, "0")}:${String(restSeconds).padStart(2, "0")}`;

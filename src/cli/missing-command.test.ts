@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const radarrApi = vi.hoisted(() => ({
-  getMovies: vi.fn(),
+  getMovie: vi.fn(),
+  getMoviesByTmdbId: vi.fn(),
   runMoviesSearch: vi.fn(),
   getReleasesForMovie: vi.fn(),
   grabRelease: vi.fn(),
@@ -21,19 +22,33 @@ vi.mock("../main/arr/radarr-client", () => ({
 import type { IpcState } from "../main/ipc";
 import { parseCliArgs } from "./args";
 import { runCommand } from "./commands";
+import { createInMemoryDatabase } from "../main/db/client";
+import { migrateDatabase } from "../main/db/migrations";
+import { createRepositories } from "../main/db/repositories";
 
 function makeState(): IpcState {
+  const db = createInMemoryDatabase(); migrateDatabase(db);
   return {
     instanceStore: {
       getWithApiKey: () => ({ kind: "radarr", name: "Radarr", baseUrl: "http://radarr.local:7878", apiKey: "key", enabled: true }),
     },
+    repositories: createRepositories(db),
   } as unknown as IpcState;
 }
 
 describe("missing Radarr command", () => {
+  it("rejects an ambiguous later ID before issuing a search or grab for earlier IDs", async () => {
+    radarrApi.getMovie.mockImplementation(async (id: number) => ({ id, title: `Internal ${id}`, tmdbId: id + 100 }));
+    radarrApi.getMoviesByTmdbId.mockImplementation(async (id: number) => id === 20 ? [{ id: 10, tmdbId: 20, title: "External 20" }] : []);
+    await expect(runCommand(makeState(), parseCliArgs(["missing", "radarr", "--ids", "5,20", "--grab"]))).rejects.toThrow("Mehrdeutige ID");
+    expect(radarrApi.runMoviesSearch).not.toHaveBeenCalled();
+    expect(radarrApi.grabRelease).not.toHaveBeenCalled();
+    expect(radarrApi.getReleasesForMovie).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
-    radarrApi.getMovies.mockResolvedValue([
+    radarrApi.getMovie.mockRejectedValue(new Error("ARR request failed: GET /movie/14292 returned 404"));
+    radarrApi.getMoviesByTmdbId.mockResolvedValue([
       { id: 9050, tmdbId: 14292, titleSlug: "14292", title: "Miracle - Das Wunder von Lake Placid", year: 2004, hasFile: false },
     ]);
     radarrApi.runMoviesSearch.mockResolvedValue({ id: 77, name: "MoviesSearch", status: "queued" });

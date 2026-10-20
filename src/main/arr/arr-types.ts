@@ -9,7 +9,7 @@ export type ArrQualityProfile = {
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export type ArrRequestRateLimiter = {
-  waitForSlot: () => Promise<void>;
+  waitForSlot: (signal?: AbortSignal) => Promise<void>;
 };
 
 export type ArrClientConfig = {
@@ -17,6 +17,25 @@ export type ArrClientConfig = {
   apiKey: string;
   fetchImpl?: FetchLike;
   rateLimiter?: ArrRequestRateLimiter;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+};
+
+export type ArrPage<T> = { page: number; pageSize: number; totalRecords: number; records: T[] };
+export type ArrHistory = {
+  id: number; date: string; eventType: string; downloadId?: string;
+  sourceTitle?: string; movieId?: number; seriesId?: number; episodeId?: number;
+  data?: Record<string, string>;
+};
+export type ArrQueueItem = {
+  id: number; downloadId?: string; title?: string; movieId?: number; seriesId?: number; episodeId?: number;
+  status?: string; trackedDownloadStatus?: string; trackedDownloadState?: string;
+  statusMessages?: Array<{ title?: string; messages?: string[] }>;
+};
+export type ArrMediaInfo = {
+  runTime?: string | null; videoBitrate?: number; audioBitrate?: number;
+  videoCodec?: string | null; audioCodec?: string | null; audioLanguages?: string | null;
+  resolution?: string | null; videoDynamicRangeType?: string | null;
 };
 
 export type ArrStatus = {
@@ -68,6 +87,9 @@ export type SonarrSeries = {
   monitored?: boolean;
   year?: number;
   qualityProfileId?: number;
+  tvdbId?: number;
+  tmdbId?: number;
+  imdbId?: string;
   [key: string]: unknown;
 };
 
@@ -78,6 +100,7 @@ export type SonarrEpisodeFile = {
   path?: string;
   relativePath?: string;
   quality?: ArrQuality;
+  mediaInfo?: ArrMediaInfo;
   [key: string]: unknown;
 };
 
@@ -101,6 +124,7 @@ export type RadarrMovieFile = {
   path?: string;
   relativePath?: string;
   quality?: ArrQuality;
+  mediaInfo?: ArrMediaInfo;
   [key: string]: unknown;
 };
 
@@ -130,6 +154,7 @@ export type AnalysisFile = {
   isFun: boolean;
   qualityName?: string;
   sizeBytes: number;
+  mediaInfo?: import("../../shared/ipc-contracts").FileMediaInfo;
 };
 
 export type MediaItemAnalysis = {
@@ -151,6 +176,7 @@ export type MediaItemAnalysis = {
   lastAnalyzedAt: string;
   qualityProfileName?: string;
   files: AnalysisFile[];
+  externalIds?: { tmdbId?: number; tvdbId?: number; imdbId?: string };
 };
 
 export type AnalysisSummary = {

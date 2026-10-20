@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { formatDateTime } from "../../shared/date-time";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -681,10 +682,4 @@ function splitCsv(value: string): string[] {
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, value));
-}
-
-function formatDateTime(value?: string) {
-  if (!value) return "-";
-  const date = new Date(value);
-  return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }

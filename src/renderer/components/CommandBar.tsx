@@ -4,6 +4,7 @@ import { IconButton } from "./IconButton";
 
 export interface CommandBarProps {
   schedulerPaused?: boolean;
+  schedulerPending?: boolean;
   onAnalyzeRadarr?: () => void;
   onAnalyzeSonarr?: () => void;
   onGrabRadarr?: () => void;
@@ -16,6 +17,7 @@ export interface CommandBarProps {
 
 export function CommandBar({
   schedulerPaused = false,
+  schedulerPending = false,
   onAnalyzeRadarr,
   onAnalyzeSonarr,
   onGrabRadarr,
@@ -59,6 +61,7 @@ export function CommandBar({
       />
       <div aria-hidden="true" className="mx-0.5 h-6 w-px bg-white/[0.08]" />
       <IconButton
+        disabled={schedulerPending}
         icon={schedulerPaused ? Play : Pause}
         label={schedulerPaused ? "Resume scheduler" : "Pause scheduler"}
         onClick={onPauseScheduler}

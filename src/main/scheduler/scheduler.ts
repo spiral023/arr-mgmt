@@ -13,6 +13,13 @@ export class Scheduler {
   private readonly jobs = new Map<string, ScheduledJob>();
   private timer: NodeJS.Timeout | null = null;
   private paused = false;
+  private stopped = false;
+  private ticking = false;
+  private readonly pauseListeners = new Set<(paused: boolean) => void>();
+
+  constructor(private readonly onError: (error: unknown, job: ScheduledJob) => void = (error, job) => {
+    console.error(`Scheduled job failed: ${job.name}`, error);
+  }) {}
 
   add(input: Omit<ScheduledJob, "id" | "nextRunAt">, now = new Date()): ScheduledJob {
     return this.upsert(input, now);
@@ -25,12 +32,24 @@ export class Scheduler {
       nextRunAt: calculateNextRunAt(input.rule, now),
     };
     this.jobs.set(job.id, job);
+    this.stopped = false;
     this.scheduleTick();
     return job;
   }
 
   setPaused(paused: boolean): void {
+    if (this.paused === paused) return;
     this.paused = paused;
+    for (const listener of this.pauseListeners) listener(paused);
+  }
+
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  onPauseChange(listener: (paused: boolean) => void): () => void {
+    this.pauseListeners.add(listener);
+    return () => { this.pauseListeners.delete(listener); };
   }
 
   list(): ScheduledJob[] {
@@ -45,6 +64,11 @@ export class Scheduler {
   }
 
   stop(): void {
+    this.stopped = true;
+    this.clearTimer();
+  }
+
+  private clearTimer(): void {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -52,20 +76,34 @@ export class Scheduler {
   }
 
   private scheduleTick(): void {
-    this.stop();
+    if (this.stopped || this.ticking || this.jobs.size === 0) return;
+    this.clearTimer();
     this.timer = setTimeout(() => void this.tick(), 1_000);
   }
 
   private async tick(): Promise<void> {
-    if (!this.paused) {
-      const now = new Date();
-      for (const job of this.jobs.values()) {
-        if (job.enabled && job.nextRunAt <= now) {
-          await job.run();
-          job.nextRunAt = calculateNextRunAt(job.rule, now);
+    if (this.ticking) return;
+    this.timer = null;
+    this.ticking = true;
+    try {
+      if (!this.paused && !this.stopped) {
+        const now = new Date();
+        for (const job of this.jobs.values()) {
+          if (this.paused || this.stopped) break;
+          if (job.enabled && job.nextRunAt <= now) {
+            try {
+              await job.run();
+            } catch (error) {
+              this.onError(error, job);
+            } finally {
+              job.nextRunAt = calculateNextRunAt(job.rule, new Date());
+            }
+          }
         }
       }
+    } finally {
+      this.ticking = false;
+      this.scheduleTick();
     }
-    this.scheduleTick();
   }
 }

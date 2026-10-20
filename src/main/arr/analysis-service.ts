@@ -7,6 +7,7 @@ import type {
   SonarrSeries
 } from "./arr-types";
 import { isFunReleaseGroup } from "../../shared/fun";
+import { normalizeMediaInfo } from "./media-info";
 
 export type RadarrAnalysisResult = {
   items: MediaItemAnalysis[];
@@ -38,7 +39,8 @@ export function analyzeSonarrSeries(
         releaseGroup,
         isFun: isFunReleaseGroup(releaseGroup),
         qualityName: episode.episodeFile.quality?.quality?.name,
-        sizeBytes
+        sizeBytes,
+        mediaInfo: normalizeMediaInfo(episode.episodeFile.mediaInfo, sizeBytes),
       }
     ];
   });
@@ -54,6 +56,7 @@ export function analyzeSonarrSeries(
     totalChildren: episodes.length,
     qualityProfileName,
     files,
+    externalIds: { tvdbId: series.tvdbId, tmdbId: series.tmdbId, imdbId: series.imdbId },
     analyzedAt
   });
 }
@@ -90,7 +93,8 @@ function analyzeRadarrMovie(movie: RadarrMovie, analyzedAt: Date, qualityProfile
           releaseGroup: movie.movieFile.releaseGroup ?? null,
           isFun: isFunReleaseGroup(movie.movieFile.releaseGroup),
           qualityName: movie.movieFile.quality?.quality?.name,
-          sizeBytes: movie.movieFile.size ?? 0
+          sizeBytes: movie.movieFile.size ?? 0,
+          mediaInfo: normalizeMediaInfo(movie.movieFile.mediaInfo, movie.movieFile.size ?? 0),
         }
       ]
     : [];
@@ -105,6 +109,7 @@ function analyzeRadarrMovie(movie: RadarrMovie, analyzedAt: Date, qualityProfile
     totalChildren: 1,
     qualityProfileName,
     files,
+    externalIds: { tmdbId: movie.tmdbId, imdbId: movie.imdbId },
     analyzedAt
   });
 }
@@ -120,12 +125,14 @@ function buildMediaItemAnalysis(input: {
   totalChildren: number;
   qualityProfileName?: string;
   files: AnalysisFile[];
+  externalIds?: MediaItemAnalysis["externalIds"];
   analyzedAt: Date;
 }): MediaItemAnalysis {
   const childrenWithFile = input.files.length;
   const funChildren = input.files.filter((file) => file.isFun).length;
-  const totalSizeBytes = sum(input.files.map((file) => file.sizeBytes));
-  const funSizeBytes = sum(input.files.filter((file) => file.isFun).map((file) => file.sizeBytes));
+  const physicalFiles = [...new Map(input.files.map((file) => [file.arrFileId ?? file.path ?? `child:${file.childArrId}`, file])).values()];
+  const totalSizeBytes = sum(physicalFiles.map((file) => file.sizeBytes));
+  const funSizeBytes = sum(physicalFiles.filter((file) => file.isFun).map((file) => file.sizeBytes));
 
   return {
     kind: input.kind,
@@ -145,7 +152,8 @@ function buildMediaItemAnalysis(input: {
     funShare: childrenWithFile === 0 ? 0 : funChildren / childrenWithFile,
     lastAnalyzedAt: input.analyzedAt.toISOString(),
     qualityProfileName: input.qualityProfileName,
-    files: input.files
+    files: input.files,
+    externalIds: input.externalIds,
   };
 }
 

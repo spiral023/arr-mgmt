@@ -1,5 +1,6 @@
 import type { createRepositories } from "../db/repositories";
 import type { ArrRelease } from "../arr/arr-types";
+import { extractDownloadId } from "../arr/download-id";
 import { selectBestFunRelease } from "../arr/sonarr-operations";
 import { QuotaService, type QuotaAction } from "../scheduler/quota-service";
 import { defaultAppSettings } from "../settings/app-settings";
@@ -10,15 +11,15 @@ import type { AppSettings, AutomationRunView, AutomationWorkItemView } from "../
 type Repositories = ReturnType<typeof createRepositories>;
 
 export type AutomationSonarrClient = {
-  getStatus?(): Promise<unknown> | unknown;
-  getReleasesForEpisode(episodeId: number): Promise<ArrRelease[]> | ArrRelease[];
-  grabRelease(release: ArrRelease): Promise<void> | void;
+  getStatus?(signal?: AbortSignal): Promise<unknown> | unknown;
+  getReleasesForEpisode(episodeId: number, signal?: AbortSignal): Promise<ArrRelease[]> | ArrRelease[];
+  grabRelease(release: ArrRelease, signal?: AbortSignal): Promise<unknown> | unknown;
 };
 
 export type AutomationRadarrClient = {
-  getStatus?(): Promise<unknown> | unknown;
-  getReleasesForMovie(movieId: number): Promise<ArrRelease[]> | ArrRelease[];
-  grabRelease(release: ArrRelease): Promise<void> | void;
+  getStatus?(signal?: AbortSignal): Promise<unknown> | unknown;
+  getReleasesForMovie(movieId: number, signal?: AbortSignal): Promise<ArrRelease[]> | ArrRelease[];
+  grabRelease(release: ArrRelease, signal?: AbortSignal): Promise<unknown> | unknown;
 };
 
 export type AutomationArrClients = {
@@ -75,7 +76,8 @@ export function createAutomationExecutor(options: AutomationExecutorOptions): Au
   return async ({ goal, run, workItems, context }) => {
     let completed = 0;
     const activeItems = workItems.filter((item) => item.status !== "satisfied" && item.status !== "out_of_scope");
-    await preflightConnections(options.clients, activeItems, repositories, run, now());
+    context?.throwIfCancelled();
+    await preflightConnections(options.clients, activeItems, repositories, run, now(), context?.signal);
 
     for (const item of activeItems) {
       context?.throwIfCancelled();
@@ -109,7 +111,8 @@ export function createAutomationExecutor(options: AutomationExecutorOptions): Au
       let grabActivityId: number | undefined;
 
       try {
-        const releases = await getReleases(options.clients, item);
+        const releases = await getReleases(options.clients, item, context?.signal);
+        context?.throwIfCancelled();
         const candidate = selectBestFunRelease(releases);
         if (!candidate) {
           repositories.automationWorkItems.updateStatus(item.id, {
@@ -144,6 +147,7 @@ export function createAutomationExecutor(options: AutomationExecutorOptions): Au
         searchCompleted = true;
 
         if (goal.actionMode === "search_and_grab" && goal.executionStrategy === "grab_immediately") {
+          context?.throwIfCancelled();
           assertQuotaSafety("grab", completed);
           const grabReservation = quota().reserve("grab", activityDetails(item, `Automation grab: ${item.title}`));
           if (!grabReservation.allowed) {
@@ -151,7 +155,12 @@ export function createAutomationExecutor(options: AutomationExecutorOptions): Au
           }
           grabActivityId = grabReservation.activityId;
 
-          await grabRelease(options.clients, item, candidate);
+          const grabbedAt = now().toISOString();
+          context?.throwIfCancelled();
+          const response = await grabRelease(options.clients, item, candidate, context?.signal);
+          repositories.transfers.record({ instanceId: item.instanceId, mediaItemId: item.mediaItemId,
+            childArrId: item.childArrId, title: candidate.title ?? item.title, grabbedAt,
+            downloadId: extractDownloadId(response) });
           repositories.releaseCandidates.delete(candidateId);
           repositories.automationWorkItems.updateStatus(item.id, {
             status: "grabbed",
@@ -180,8 +189,9 @@ export function createAutomationExecutor(options: AutomationExecutorOptions): Au
         } else if (!searchCompleted) {
           quota().complete(searchReservation.activityId!, "failed", message);
         }
+        context?.throwIfCancelled();
         completed += 1;
-        context?.incrementProgress();
+        context?.incrementProgress({ failed: true });
       }
     }
 
@@ -195,29 +205,30 @@ async function preflightConnections(
   repositories: Repositories,
   run: AutomationRunView,
   checkedAt: Date,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (items.some((item) => item.kind === "episode") && clients.sonarr.getStatus) {
-    await clients.sonarr.getStatus();
+    await clients.sonarr.getStatus(signal);
     recordEvent(repositories, run, "info", "Sonarr connection check passed", checkedAt);
   }
   if (items.some((item) => item.kind === "movie") && clients.radarr.getStatus) {
-    await clients.radarr.getStatus();
+    await clients.radarr.getStatus(signal);
     recordEvent(repositories, run, "info", "Radarr connection check passed", checkedAt);
   }
 }
 
-function getReleases(clients: AutomationArrClients, item: AutomationWorkItemView): Promise<ArrRelease[]> | ArrRelease[] {
+function getReleases(clients: AutomationArrClients, item: AutomationWorkItemView, signal?: AbortSignal): Promise<ArrRelease[]> | ArrRelease[] {
   if (item.kind === "movie") {
-    return clients.radarr.getReleasesForMovie(item.childArrId);
+    return signal ? clients.radarr.getReleasesForMovie(item.childArrId, signal) : clients.radarr.getReleasesForMovie(item.childArrId);
   }
-  return clients.sonarr.getReleasesForEpisode(item.childArrId);
+  return signal ? clients.sonarr.getReleasesForEpisode(item.childArrId, signal) : clients.sonarr.getReleasesForEpisode(item.childArrId);
 }
 
-function grabRelease(clients: AutomationArrClients, item: AutomationWorkItemView, release: ArrRelease): Promise<void> | void {
+function grabRelease(clients: AutomationArrClients, item: AutomationWorkItemView, release: ArrRelease, signal?: AbortSignal): Promise<unknown> | unknown {
   if (item.kind === "movie") {
-    return clients.radarr.grabRelease(release);
+    return signal ? clients.radarr.grabRelease(release, signal) : clients.radarr.grabRelease(release);
   }
-  return clients.sonarr.grabRelease(release);
+  return signal ? clients.sonarr.grabRelease(release, signal) : clients.sonarr.grabRelease(release);
 }
 
 function activityDetails(item: AutomationWorkItemView, message: string) {

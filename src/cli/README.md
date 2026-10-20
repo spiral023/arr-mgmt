@@ -22,7 +22,7 @@ Wenn die Development-CLI mit einem `NODE_MODULE_VERSION`-Fehler fuer
 Dann einmal `npx electron-rebuild -f -w better-sqlite3` ausfuehren. Fuer Vitest
 stellt `npm rebuild better-sqlite3` das Modul wieder auf System-Node zurueck.
 
-`release\ARR Ops 0.1.0.exe` ist der portable GUI-Wrapper von electron-builder und
+`release\ARR Ops 0.1.2.exe` ist der portable GUI-Wrapper von electron-builder und
 nicht fuer stdout-basierte Agenten-CLI-Aufrufe gedacht. `arr-cli.exe` muss im selben
 Ordner wie `ARR Ops.exe` liegen; der Wrapper startet die App im CLI-Modus, entfernt
 `ELECTRON_RUN_AS_NODE` aus der Kindprozess-Umgebung und reicht stdout/stderr sowie den
@@ -58,9 +58,32 @@ Exit-Code: `0` = ok, `1` = Fehler. `hint` ist immer ein kurzer nächster-Schritt
 | `pipeline sonarr\|radarr\|all [--ids 1,2]` | Analyse+Suche+Grab |
 | `automation list \| run <goalId>` | Automations-Goals |
 | `help` | Befehlsübersicht |
+| `wanted sonarr\|radarr missing\|cutoff [--limit N] [--offset N]` | Überwachte fehlende/verfügbare Dateien oder Qualitätsziel-Lücken direkt aus ARR |
+| `transfers sonarr\|radarr [--refresh]` | Gespeicherter Download-/Importstatus; `--refresh` gleicht lesend mit ARR ab |
+| `parse sonarr\|radarr "Releasename"` | Releasenamen durch ARR analysieren lassen, ohne Import/Download |
 
 Globale Flags: `--pretty`, `--quiet`, `--full`, `--limit N`, `--offset N`.
 Spezialflag: `missing radarr --grab`.
+
+`--id-type auto|arr|tmdb|tvdb` macht den ID-Namensraum explizit. Radarr unterstützt
+`arr` und `tmdb`, Sonarr zusätzlich `tvdb`. In `auto` bleiben Sonarr-IDs interne
+IDs; Radarr prüft interne ID und TMDb-ID. Mehrdeutige Radarr-Zahlen führen zum
+Abbruch vor der Aktion. Ungültige IDs werden nicht still übersprungen.
+`--ids` mit Ziel `all` ist nicht erlaubt; beide Instanzen getrennt aufrufen.
+
+Die normale Analyse aktualisiert neue, durch ARR-Historie geänderte und mindestens
+24 Stunden alte Titel. Bei fehlendem/ungültigem Historienstand erfolgt ein
+Vollabgleich. `analyze radarr --refresh` bzw. `analyze sonarr --refresh` erzwingt
+ihn sofort. Nur vollständig erfolgreiche, unbeschränkte Bestandsläufe entfernen
+lokale Einträge, die in ARR gelöscht wurden; Teil- und Stichprobenläufe tun dies
+nicht. Aktivitäts-/Quotenhistorie bleibt erhalten.
+
+Neue Grabs werden als „an ARR übergeben“ gespeichert. Die nächste Analyse,
+`transfers … --refresh` oder „Status prüfen“ im Detailbereich prüft Queue und
+Import-Historie. Ein verschwundener Download zählt ohne passenden Historieneintrag
+als unbekannt. Die Historienprüfung ist auf sieben Tage begrenzt; ältere offene
+Transfers können deshalb unbekannt bleiben. Bestehende Grabs vor dieser Funktion
+werden nicht nachträglich als verfolgt ausgegeben.
 
 `instances list` liefert pro Eintrag ein `source`-Feld: `env` bedeutet Development-
 Override aus `.env`/Umgebung, `gui` bedeutet gespeicherte GUI-Konfiguration.

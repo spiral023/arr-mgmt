@@ -16,13 +16,30 @@ function testRateLimiter(): ArrRateLimiter {
 }
 
 describe("ARR API clients", () => {
+  it("separates metadata reads from the unchanged five-per-second release limit", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn<FetchLike>(async () => jsonResponse([]));
+      const client = new RadarrClient({ baseUrl: `http://${crypto.randomUUID()}.test`, apiKey: "test", fetchImpl });
+      const pending = Promise.all([
+        ...Array.from({ length: 9 }, () => client.getMovies()),
+        ...Array.from({ length: 6 }, () => client.getReleasesForMovie(1)),
+      ]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchImpl).toHaveBeenCalledTimes(13);
+      expect(fetchImpl.mock.calls.filter(([url]) => url.includes("/release"))).toHaveLength(5);
+      await vi.advanceTimersByTimeAsync(1000);
+      await pending;
+      expect(fetchImpl).toHaveBeenCalledTimes(15);
+    } finally { vi.useRealTimers(); }
+  });
   it("limits ARR API request starts to five per second across clients", async () => {
     vi.useFakeTimers();
     try {
       const starts: number[] = [];
       const fetchImpl = vi.fn<FetchLike>(async () => {
         starts.push(Date.now());
-        return jsonResponse({ ok: true });
+        return jsonResponse([]);
       });
       const rateLimiter = new ArrRateLimiter({ maxRequests: 5, windowMs: 1000 });
       const sonarr = new SonarrClient({

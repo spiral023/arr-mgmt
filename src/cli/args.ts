@@ -14,6 +14,9 @@ export const KNOWN_VERBS = [
   "pipeline",
   "missing",
   "automation",
+  "wanted",
+  "transfers",
+  "parse",
   "help",
 ] as const;
 
@@ -30,6 +33,8 @@ export type ParsedArgs = {
   quiet: boolean;
   nonFunOnly: boolean;
   grab: boolean;
+  idType: "auto" | "arr" | "tmdb" | "tvdb";
+  refresh: boolean;
 };
 
 export function parseIds(value: string | string[] | undefined): number[] {
@@ -40,11 +45,11 @@ export function parseIds(value: string | string[] | undefined): number[] {
     .map((part) => {
       const trimmed = part.trim();
       const n = Number(trimmed);
-      if (Number.isInteger(n)) return n;
+      if (Number.isSafeInteger(n)) return n;
       const urlId = trimmed.match(/\/(?:movie|series)\/(\d+)(?:[/?#]|$)/i);
       return urlId ? Number(urlId[1]) : Number.NaN;
     })
-    .filter((n) => Number.isInteger(n) && n > 0);
+    .filter((n) => Number.isSafeInteger(n) && n > 0);
 }
 
 function firstPositional(userArgs: string[]): string | undefined {
@@ -79,8 +84,21 @@ export function parseCliArgs(userArgs: string[]): ParsedArgs {
       quiet: { type: "boolean" },
       grab: { type: "boolean" },
       "non-fun-only": { type: "boolean" },
+      "id-type": { type: "string" },
+      refresh: { type: "boolean" },
     },
   });
+
+  const idType = values["id-type"] ?? "auto";
+  if (!["auto", "arr", "tmdb", "tvdb"].includes(idType)) throw new Error("--id-type erwartet auto|arr|tmdb|tvdb");
+  for (const flag of ["limit", "offset", "sample"] as const) {
+    if (values[flag] !== undefined && (!Number.isSafeInteger(Number(values[flag])) || Number(values[flag]) < (flag === "offset" ? 0 : 1))) {
+      throw new Error(`--${flag} muss eine ${flag === "offset" ? "nicht negative" : "positive"} ganze Zahl sein`);
+    }
+  }
+  for (const value of values.ids ?? []) {
+    if (value.split(",").some((part) => parseIds(part).length !== 1)) throw new Error("--ids enthält eine ungültige ID");
+  }
 
   return {
     verb: values.help ? "help" : (positionals[0] ?? "help"),
@@ -95,5 +113,7 @@ export function parseCliArgs(userArgs: string[]): ParsedArgs {
     quiet: Boolean(values.quiet),
     nonFunOnly: Boolean(values["non-fun-only"]),
     grab: Boolean(values.grab),
+    idType: idType as ParsedArgs["idType"],
+    refresh: Boolean(values.refresh),
   };
 }

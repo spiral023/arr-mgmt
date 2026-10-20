@@ -1,18 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { selectSonarrSeriesForAnalysis } from "../../src/main/arr/sonarr-analysis-plan";
+import { selectAnalysisItems } from "../../src/main/arr/analysis-plan";
 import type { SonarrSeries } from "../../src/main/arr/arr-types";
 
-describe("selectSonarrSeriesForAnalysis", () => {
+describe("incremental Sonarr analysis", () => {
   it("continues a partial scan by analyzing only missing series", () => {
     const series = makeSeries([1, 2, 3, 4]);
 
-    expect(selectSonarrSeriesForAnalysis(series, new Set([1, 3])).map((item) => item.id)).toEqual([2, 4]);
+    const now = new Date();
+    expect(selectAnalysisItems(series, [1, 3].map((arrId) => ({ arrId, lastAnalyzedAt: now.toISOString() })), new Set(), now).map((item) => item.id)).toEqual([2, 4]);
   });
 
-  it("reanalyzes all series when no partial scan is left to resume", () => {
+  it("refreshes every series during a forced full reconciliation", () => {
     const series = makeSeries([1, 2]);
 
-    expect(selectSonarrSeriesForAnalysis(series, new Set([1, 2])).map((item) => item.id)).toEqual([1, 2]);
+    const now = new Date();
+    expect(selectAnalysisItems(series, [1, 2].map((arrId) => ({ arrId, lastAnalyzedAt: now.toISOString() })), new Set(), now, true).map((item) => item.id)).toEqual([1, 2]);
   });
 });
 

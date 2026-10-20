@@ -12,6 +12,8 @@ export interface AppFrameProps {
   children: ReactNode;
   kpis?: KpiItem[];
   schedulerPaused?: boolean;
+  schedulerPending?: boolean;
+  schedulerError?: string;
   onAnalyzeRadarr?: () => void;
   onAnalyzeSonarr?: () => void;
   onGrabRadarr?: () => void;
@@ -28,6 +30,8 @@ export function AppFrame({
   children,
   kpis,
   schedulerPaused,
+  schedulerPending,
+  schedulerError,
   onAnalyzeRadarr,
   onAnalyzeSonarr,
   onGrabRadarr,
@@ -74,8 +78,10 @@ export function AppFrame({
               onSearchRadarr={onSearchRadarr}
               onSearchSonarr={onSearchSonarr}
               schedulerPaused={schedulerPaused}
+              schedulerPending={schedulerPending}
             />
           </div>
+          {schedulerError ? <p role="alert" className="pb-2 text-sm text-signal-amber">{schedulerError}</p> : null}
         </div>
       </header>
 

@@ -8,10 +8,15 @@ import {
 import { SonarrClient } from "../main/arr/sonarr-client";
 import { RadarrClient } from "../main/arr/radarr-client";
 import { isGrabbableRelease } from "../main/arr/sonarr-operations";
-import type { RadarrMovie } from "../main/arr/arr-types";
+import type { RadarrMovie, SonarrEpisode } from "../main/arr/arr-types";
 import type { InstanceKind } from "../shared/ipc-contracts";
 import type { ParsedArgs } from "./args";
 import { fail, ok, paginate, pickFields, type CommandResult } from "./output";
+import { resolveMovieIdentity } from "./movie-ids";
+import { refreshTransfers, getWanted } from "../main/arr/library-service";
+import { analyzeRadarrMovies } from "../main/arr/analysis-service";
+import { extractDownloadId } from "../main/arr/download-id";
+import { mapConcurrent } from "../main/async/map-concurrent";
 
 export const DEFAULT_LIMIT = 20;
 
@@ -19,6 +24,20 @@ export const SONARR_LIST_FIELDS = ["arrId", "title", "status", "monitored", "non
 export const RADARR_LIST_FIELDS = ["arrId", "title", "year", "status", "monitored", "nonFunFiles", "funShare"] as const;
 
 export async function runCommand(state: IpcState, args: ParsedArgs): Promise<CommandResult> {
+  if (args.sub === "all" && args.ids.length) {
+    return fail("invalid_scope", "--ids erfordert sonarr oder radarr als Ziel", "IDs gehören zu genau einer Instanz; beide Instanzen getrennt aufrufen.");
+  }
+  if (args.sub === "sonarr" && args.ids.length && ["analyze", "search", "grab", "pipeline"].includes(args.verb) &&
+    args.idType !== "auto" && args.idType !== "arr") {
+    const client = new SonarrClient(state.instanceStore.getWithApiKey("sonarr"));
+    const series = await client.getSeries();
+    const ids = args.ids.map((id) => {
+      const matches = series.filter((item) => (args.idType === "tvdb" ? item.tvdbId : item.tmdbId) === id);
+      if (matches.length !== 1) throw new Error(`Sonarr ${args.idType}-ID ${id} ist unbekannt oder mehrdeutig`);
+      return matches[0].id;
+    });
+    args = { ...args, ids: [...new Set(ids)], idType: "arr" };
+  }
   switch (args.verb) {
     case "library":
       return libraryCommand(state, args);
@@ -46,11 +65,46 @@ export async function runCommand(state: IpcState, args: ParsedArgs): Promise<Com
       return missingCommand(state, args);
     case "automation":
       return automationCommand(state, args);
+    case "wanted":
+    case "transfers":
+    case "parse":
+      return readArrCommand(state, args);
     case "help":
       return helpCommand();
     default:
       return fail("unknown_command", `Unbekannter Befehl: ${args.verb}`, "Verfügbare Befehle mit 'help' anzeigen.");
   }
+}
+
+async function readArrCommand(state: IpcState, args: ParsedArgs): Promise<CommandResult> {
+  const kind = args.sub;
+  if (kind !== "sonarr" && kind !== "radarr") return fail("missing_argument", `${args.verb} erwartet sonarr|radarr`, "Beispiele siehe help.");
+  if (args.verb === "transfers") {
+    const rows = args.refresh ? await refreshTransfers(state, kind) : state.repositories.transfers.list()
+      .filter((item) => item.instanceId === state.repositories.instances.findIdByKind(kind));
+    const { slice, page } = paginate(rows, args.offset ?? 0, args.limit ?? DEFAULT_LIMIT);
+    return ok(slice, "Grab bestätigt nur die Übergabe. --refresh prüft Queue und Import-Historie, ohne Downloads auszulösen.", page);
+  }
+  if (args.verb === "parse") {
+    if (!args.rest[0]) return fail("missing_argument", "Releasename fehlt", 'parse sonarr "Serie.S01E01.German.1080p-FuN"');
+    const config = state.instanceStore.getWithApiKey(kind);
+    const client = kind === "sonarr" ? new SonarrClient(config) : new RadarrClient(config);
+    return ok(await client.parseReleaseName(args.rest.join(" ")), "Nur Namensanalyse; kein Import oder Download ausgelöst.");
+  }
+  const mode = args.rest[0];
+  if (mode !== "missing" && mode !== "cutoff") return fail("missing_argument", "wanted erwartet missing|cutoff", "wanted radarr missing --limit 20");
+  const limit = Math.min(args.limit ?? DEFAULT_LIMIT, 100);
+  const offset = args.offset ?? 0;
+  const pageNumber = Math.floor(offset / limit) + 1;
+  const result = await getWanted(state, kind, mode, pageNumber, limit);
+  const rows: Array<RadarrMovie | SonarrEpisode> = result.records.slice(offset % limit);
+  if (rows.length < limit && pageNumber * limit < result.totalRecords) {
+    const next = await getWanted(state, kind, mode, pageNumber + 1, limit);
+    rows.push(...next.records.slice(0, limit - rows.length));
+  }
+  return ok(rows, mode === "missing" ? "ARR berücksichtigt Veröffentlichungsdaten; ohne Datei bedeutet nicht automatisch bereits verfügbar." :
+    "Unter dem Qualitätsziel des ARR-Profils; unabhängig von FuN-Coverage.",
+    { total: result.totalRecords, offset, shown: rows.length });
 }
 
 function libraryCommand(state: IpcState, args: ParsedArgs): CommandResult {
@@ -144,14 +198,17 @@ function helpCommand(): CommandResult {
         "activity [--limit N]": "Letzte Aktivitäten",
         "jobs list|status <id>": "Jobs auflisten / Status",
         "instances list|test sonarr|radarr": "Instanzen",
-        "analyze sonarr|radarr|all [--ids][--sample]": "Analyse auslösen",
+        "analyze sonarr|radarr|all [--ids][--sample][--refresh]": "Analyse aktualisieren; --refresh erzwingt Vollprüfung",
         "search sonarr|radarr --ids 1,2,3": "FuN*-Suche auslösen",
         "grab sonarr|radarr --ids 1,2,3": "Kandidaten grabben",
         "missing radarr --ids 1,2,3 [--grab]": "Klassische Radarr-Missing-Suche, optional bester Release-Grab",
         "pipeline sonarr|radarr|all [--ids]": "Analyse+Suche+Grab",
         "automation list|run <goalId>": "Automations-Goals",
+        "wanted sonarr|radarr missing|cutoff": "Verfügbare fehlende Titel oder Qualitätsziel-Lücken, --limit/--offset",
+        "transfers sonarr|radarr [--refresh]": "Download-/Importstatus; --refresh gleicht mit ARR ab",
+        'parse sonarr|radarr "Releasename"': "Namensanalyse ohne Download oder Import",
       },
-      globalFlags: ["--pretty", "--quiet", "--full", "--limit N", "--offset N"],
+      globalFlags: ["--pretty", "--quiet", "--full", "--limit N", "--offset N", "--id-type auto|arr|tmdb|tvdb"],
     },
     "Alle Aktionen sind synchron; Ausgabe ist JSON auf stdout, Logs auf stderr.",
   );
@@ -231,12 +288,13 @@ async function analyzeCommand(state: IpcState, args: ParsedArgs): Promise<Comman
     enqueueRadarrAnalysis,
   } = await import("../main/ipc");
   const target = args.sub;
+  const radarrIds = target === "radarr" && args.ids.length ? await resolveRadarrMovieIds(state, args.ids, args.idType) : args.ids;
   const jobs: import("../main/scheduler/job-runner").Job[] = [];
   if (target === "sonarr" || target === "all") {
-    jobs.push(enqueueSonarrAnalysis(state, "CLI analyze Sonarr", args.ids.length ? args.ids : undefined, args.sample));
+    jobs.push(enqueueSonarrAnalysis(state, "CLI analyze Sonarr", args.ids.length ? args.ids : undefined, args.sample, args.refresh));
   }
   if (target === "radarr" || target === "all") {
-    jobs.push(enqueueRadarrAnalysis(state, "CLI analyze Radarr", args.ids.length ? args.ids : undefined, args.sample));
+    jobs.push(enqueueRadarrAnalysis(state, "CLI analyze Radarr", radarrIds.length ? radarrIds : undefined, args.sample, args.refresh));
   }
   if (jobs.length === 0) {
     return fail("missing_argument", "analyze erwartet: sonarr|radarr|all", "Beispiel: analyze sonarr --sample 50");
@@ -252,7 +310,7 @@ async function searchCommand(state: IpcState, args: ParsedArgs): Promise<Command
   }
   let job: import("../main/scheduler/job-runner").Job;
   if (args.sub === "sonarr") job = enqueueSonarrSearch(state, { seriesIds: args.ids });
-  else if (args.sub === "radarr") job = enqueueRadarrSearch(state, { movieIds: await resolveRadarrMovieIds(state, args.ids) });
+  else if (args.sub === "radarr") job = enqueueRadarrSearch(state, { movieIds: await resolveRadarrMovieIds(state, args.ids, args.idType) });
   else return fail("missing_argument", "search erwartet: sonarr|radarr", "Beispiel: search sonarr --ids 5,8");
   const data = jobsToActionData(await awaitJobs(state, [job]));
   return ok(data, actionHint("search", data));
@@ -265,7 +323,7 @@ async function grabCommand(state: IpcState, args: ParsedArgs): Promise<CommandRe
   }
   let job: import("../main/scheduler/job-runner").Job;
   if (args.sub === "sonarr") job = enqueueSonarrGrab(state, { seriesIds: args.ids });
-  else if (args.sub === "radarr") job = enqueueRadarrGrab(state, { movieIds: await resolveRadarrMovieIds(state, args.ids) });
+  else if (args.sub === "radarr") job = enqueueRadarrGrab(state, { movieIds: await resolveRadarrMovieIds(state, args.ids, args.idType) });
   else return fail("missing_argument", "grab erwartet: sonarr|radarr", "Beispiel: grab sonarr --ids 5,8");
   const data = jobsToActionData(await awaitJobs(state, [job]));
   return ok(data, actionHint("grab", data));
@@ -289,23 +347,32 @@ function radarrClient(state: IpcState): RadarrClient {
   return new RadarrClient({ baseUrl: config.baseUrl, apiKey: config.apiKey });
 }
 
-function resolveRadarrMovie(movies: RadarrMovie[], requestedId: number): RadarrMovie | undefined {
-  const asSlug = String(requestedId);
-  return (
-    movies.find((movie) => movie.id === requestedId) ??
-    movies.find((movie) => movie.tmdbId === requestedId) ??
-    movies.find((movie) => movie.titleSlug === asSlug)
-  );
-}
-
 /**
  * Übersetzt angefragte IDs (interne Radarr-ID, tmdbId oder aus einer URL extrahierte
- * Zahl) in interne Radarr-`movie.id`s. Eine ID, die sich nicht auflösen lässt, wird
- * unverändert durchgereicht, damit eine valide interne ID nie verloren geht.
+ * Zahl) in interne Radarr-`movie.id`s. Unbekannte oder mehrdeutige IDs brechen vor
+ * jeder Aktion ab; --id-type erlaubt die eindeutige Wahl des Namensraums.
  */
-async function resolveRadarrMovieIds(state: IpcState, requestedIds: number[]): Promise<number[]> {
-  const movies = await radarrClient(state).getMovies();
-  return requestedIds.map((id) => resolveRadarrMovie(movies, id)?.id ?? id);
+async function loadRequestedMovies(client: RadarrClient, ids: number[], type: ParsedArgs["idType"]) {
+  if (type === "tvdb") throw new Error("Radarr verwendet keine TVDB-IDs");
+  return (await mapConcurrent([...new Set(ids)], 4, async (id) => {
+    const [internal, external] = await Promise.all([
+      type !== "tmdb" ? client.getMovie(id).then((movie) => [movie]).catch((error: unknown) => {
+        if (error instanceof Error && error.message.endsWith("returned 404")) return [];
+        throw error;
+      }) : Promise.resolve([]),
+      type !== "arr" ? client.getMoviesByTmdbId(id) : Promise.resolve([]),
+    ]);
+    return [...internal, ...external];
+  })).flat();
+}
+
+async function resolveRadarrMovieIds(state: IpcState, requestedIds: number[], type: ParsedArgs["idType"]): Promise<number[]> {
+  const movies = await loadRequestedMovies(radarrClient(state), requestedIds, type);
+  return [...new Set(requestedIds.map((id) => {
+    const movie = resolveMovieIdentity(movies, id, type);
+    if (!movie) throw new Error(`Kein Radarr-Film für ${type}-ID ${id}; keine Aktion ausgelöst`);
+    return movie.id;
+  }))];
 }
 
 function missingRadarrHint(data: { searched: number; grabbed: number; failed: number; grab: boolean }): string {
@@ -324,11 +391,11 @@ async function missingCommand(state: IpcState, args: ParsedArgs): Promise<Comman
   }
 
   const client = radarrClient(state);
-  const movies = await client.getMovies();
+  const movies = await loadRequestedMovies(client, args.ids, args.idType);
+  const resolved = [...new Set(args.ids)].map((id) => ({ id, movie: resolveMovieIdentity(movies, id, args.idType) }));
   const items: MissingRadarrItemResult[] = [];
 
-  for (const requestedId of args.ids) {
-    const movie = resolveRadarrMovie(movies, requestedId);
+  for (const { id: requestedId, movie } of resolved) {
     if (!movie) {
       items.push({
         requestedId,
@@ -373,7 +440,13 @@ async function missingCommand(state: IpcState, args: ParsedArgs): Promise<Comman
         continue;
       }
 
-      await client.grabRelease(release);
+      const config = state.instanceStore.getWithApiKey("radarr");
+      const instanceId = state.repositories.instances.upsert({ ...config, kind: "radarr", apiKeyEncrypted: "managed-by-instance-store", enabled: true, now: new Date() });
+      const mediaItemId = state.repositories.mediaItems.upsertAnalysis(instanceId, analyzeRadarrMovies([movie]).items[0]);
+      const grabbedAt = new Date().toISOString();
+      const response = await client.grabRelease(release);
+      state.repositories.transfers.record({ instanceId, mediaItemId, childArrId: movie.id,
+        title: release.title ?? movie.title, grabbedAt, downloadId: extractDownloadId(response) });
       items.push({
         ...base,
         searched,
@@ -413,7 +486,7 @@ async function pipelineCommand(state: IpcState, args: ParsedArgs): Promise<Comma
   } else if (target === "sonarr") {
     job = args.ids.length ? enqueueCombinedJob(state, "selected", { seriesIds: args.ids }) : enqueueCombinedJob(state, "sonarr");
   } else if (target === "radarr") {
-    job = args.ids.length ? enqueueCombinedJob(state, "selected", { movieIds: args.ids }) : enqueueCombinedJob(state, "radarr");
+    job = args.ids.length ? enqueueCombinedJob(state, "selected", { movieIds: await resolveRadarrMovieIds(state, args.ids, args.idType) }) : enqueueCombinedJob(state, "radarr");
   } else {
     return fail("missing_argument", "pipeline erwartet: sonarr|radarr|all", "Beispiel: pipeline all");
   }

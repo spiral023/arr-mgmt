@@ -228,6 +228,13 @@ const statements = [
   "create index if not exists idx_activity_log_media_action_created on activity_log(media_item_id, action, created_at)",
   "create index if not exists idx_activity_log_action_created on activity_log(action, created_at)",
   "create index if not exists idx_media_items_instance_kind on media_items(instance_id, kind)",
+  "create index if not exists idx_media_items_kind_arr on media_items(kind, arr_id)",
+  "create index if not exists idx_media_files_item_child on media_files(media_item_id, child_arr_id)",
+  "create index if not exists idx_activity_log_child_action_created on activity_log(instance_id, child_arr_id, action, created_at)",
+  "create index if not exists idx_activity_log_created on activity_log(created_at desc)",
+  "create index if not exists idx_job_events_job_created on job_events(job_id, created_at)",
+  "create index if not exists idx_automation_work_items_file on automation_work_items(media_file_id)",
+  "create index if not exists idx_automation_work_items_media on automation_work_items(media_item_id)",
   "create index if not exists idx_release_candidates_media on release_candidates(media_item_id, child_arr_id)",
   "create index if not exists idx_perf_samples_phase_op on perf_samples(phase, operation, created_at)",
   "create index if not exists idx_perf_samples_job on perf_samples(job_id)",
@@ -236,6 +243,8 @@ const statements = [
   "create index if not exists idx_automation_work_items_goal_status on automation_work_items(goal_id, status)",
   "create index if not exists idx_automation_work_items_goal_sort on automation_work_items(goal_id, sort_key)",
   "create index if not exists idx_automation_runs_goal on automation_runs(goal_id, started_at)",
+  "create index if not exists idx_automation_runs_job on automation_runs(job_id)",
+  "create index if not exists idx_automation_events_run on automation_events(run_id)",
   "create index if not exists idx_automation_events_goal on automation_events(goal_id, created_at)",
   `create table if not exists media_item_overrides (
     id integer primary key autoincrement,
@@ -263,6 +272,17 @@ export function migrateDatabase(db: AppDatabase): void {
     }
     ensureColumn(db, "media_items", "title_slug", "text");
     ensureColumn(db, "media_items", "quality_profile_name", "text");
+    ensureColumn(db, "media_items", "external_ids_json", "text");
+    ensureColumn(db, "media_files", "media_info_json", "text");
+    db.exec(`create table if not exists transfers (
+      id integer primary key autoincrement,
+      instance_id integer not null references instances(id) on delete cascade,
+      media_item_id integer not null references media_items(id) on delete cascade,
+      child_arr_id integer not null, title text not null, download_id text,
+      status text not null default 'grabbed', message text, grabbed_at text not null, checked_at text
+    ); create index if not exists idx_transfers_item on transfers(media_item_id, grabbed_at);
+       create index if not exists idx_transfers_status on transfers(instance_id, status);`);
+    ensureColumn(db, "transfers", "source_url", "text");
   });
 
   try {

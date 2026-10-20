@@ -3,6 +3,8 @@ import type { ScheduleAction, ScheduleIntervalKind } from "./domain";
 export type { ScheduleAction, ScheduleIntervalKind };
 
 export type IpcChannel =
+  | "scheduler:getState"
+  | "scheduler:setPaused"
   | "settings:get"
   | "settings:update"
   | "schedules:list"
@@ -15,6 +17,8 @@ export type IpcChannel =
   | "library:sonarr"
   | "library:radarr"
   | "library:itemDetails"
+  | "library:refreshTransfers"
+  | "library:wanted"
   | "stats:summary"
   | "activity:recent"
   | "jobs:list"
@@ -154,6 +158,25 @@ export type NonFunFileView = {
   releaseGroup: string | null;
   quality: string | null;
   sizeBytes: number;
+  mediaInfo?: FileMediaInfo | null;
+};
+
+export type FileMediaInfo = {
+  runtimeSeconds: number | null;
+  totalBitrateMbps: number | null;
+  megabytesPerMinute: number | null;
+  videoBitrateMbps: number | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  audioLanguages: string | null;
+  resolution: string | null;
+};
+export type TransferStatus = "grabbed" | "downloading" | "importing" | "imported" | "failed" | "unknown";
+export type TransferView = {
+  id: number; instanceId: number; mediaItemId: number; childArrId: number; title: string;
+  downloadId: string | null; status: TransferStatus; message: string | null;
+  grabbedAt: string; checkedAt: string | null;
+  sourceUrl?: string | null;
 };
 
 export type ReleaseCandidateView = {
@@ -173,6 +196,9 @@ export type MediaItemDetails = {
   arrId: number;
   nonFunFiles: NonFunFileView[];
   candidates: ReleaseCandidateView[];
+  files?: NonFunFileView[];
+  externalIds?: { tmdbId?: number; tvdbId?: number; imdbId?: string };
+  transfers?: TransferView[];
 };
 
 export type JobStatus = "queued" | "running" | "blocked_by_budget" | "completed" | "failed" | "cancelled";
@@ -442,6 +468,7 @@ export type ResumeJobInput = { jobId: string };
 export type RendererApi = {
   invoke: <T = unknown>(channel: IpcChannel, payload?: unknown) => Promise<T>;
   onJobEvent: (callback: (payload: unknown) => void) => () => void;
+  onSchedulerEvent?: (callback: (payload: { paused: boolean }) => void) => () => void;
 };
 
 declare global {

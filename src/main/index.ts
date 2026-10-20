@@ -12,7 +12,7 @@ import { createAppDatabase } from "./db/client";
 import { migrateDatabase } from "./db/migrations";
 import { createRepositories } from "./db/repositories";
 import { InstanceStore } from "./instances/instance-store";
-import { registerIpcHandlers, registerPersistedAutomationGoals, registerPersistedSchedules } from "./ipc";
+import { enqueueRadarrAnalysis, enqueueSonarrAnalysis, registerIpcHandlers, registerPersistedAutomationGoals, registerPersistedSchedules } from "./ipc";
 import { createNotificationAdapter } from "./notifications";
 import { JobRunner } from "./scheduler/job-runner";
 import { Scheduler } from "./scheduler/scheduler";
@@ -36,6 +36,7 @@ if (isCliInvocation(userArgs)) {
     const db = createAppDatabase(join(app.getPath("userData"), "arr-ops.sqlite"));
     migrateDatabase(db);
     const repositories = createRepositories(db);
+    scheduler.setPaused(repositories.settings.get<boolean>("scheduler.paused", false) === true);
     const jobRunner = new JobRunner(notificationAdapter, {
       persistence: repositories.jobs,
       onChange: (event) => window.webContents.send("jobs:event", event),
@@ -53,11 +54,20 @@ if (isCliInvocation(userArgs)) {
     void registerPersistedAutomationGoals(ipcState).catch((error) => {
       console.error("Failed to start persisted automation goals", error);
     });
-    createTray(window, {
+    const trayController = createTray(window, {
       runAnalysis: () => {
-        jobRunner.enqueue({ name: "Manual analysis", kind: "analysis", steps: [async () => undefined] });
+        for (const instance of instanceStore.list().filter((item) => item.enabled && item.hasApiKey)) {
+          if (instance.kind === "sonarr") enqueueSonarrAnalysis(ipcState, "Tray: Analyze Sonarr");
+          else enqueueRadarrAnalysis(ipcState, "Tray: Analyze Radarr");
+        }
       },
       pauseScheduler: (paused) => scheduler.setPaused(paused),
+    });
+    trayController.setSchedulerPaused(scheduler.isPaused());
+    scheduler.onPauseChange((paused) => {
+      repositories.settings.set("scheduler.paused", paused);
+      trayController.setSchedulerPaused(paused);
+      if (!window.isDestroyed()) window.webContents.send("scheduler:event", { paused });
     });
   });
 

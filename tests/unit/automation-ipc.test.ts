@@ -215,7 +215,7 @@ function createState(overrides: Record<string, unknown> = {}) {
       settings: { get: vi.fn(), set: vi.fn() },
       stats: { summary: vi.fn() },
     },
-    scheduler: { remove: vi.fn(), upsert: vi.fn() },
+    scheduler: { remove: vi.fn(), upsert: vi.fn(), isPaused: vi.fn(() => false) },
     ...overrides,
   } as unknown as TestState;
 }
